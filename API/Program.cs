@@ -9,6 +9,7 @@ using LineJobs.Jobs;
 using LineJobs.Security;
 using LineJobs.Storage;
 using Microsoft.AspNetCore.Authentication;
+using MongoDB.Driver;
 
 namespace LineJobs;
 
@@ -19,6 +20,13 @@ public static class Program
     internal static WebApplication Build(string[] args, Action<WebApplicationBuilder>? configure = null)
     {
         var builder = WebApplication.CreateBuilder(args);
+        if (builder.Configuration["PORT"] is { Length: > 0 } portValue)
+        {
+            if (!int.TryParse(portValue, out var port) || port is < 1 or > 65535)
+                throw new InvalidOperationException("PORT must contain a valid TCP port.");
+            builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+        }
+
         builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 64 * 1024);
         builder.Services.ConfigureHttpJsonOptions(options =>
         {
@@ -37,13 +45,13 @@ public static class Program
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = 240, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
         });
 
-        builder.Services.AddSingleton(sp => ApiSettings.Read(
-            sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHostEnvironment>().ContentRootPath));
+        builder.Services.AddSingleton(sp => ApiSettings.Read(sp.GetRequiredService<IConfiguration>()));
         builder.Services.AddSingleton<SecretStore>();
         builder.Services.AddSingleton<Database>();
         builder.Services.AddSingleton<AccountStore>();
         builder.Services.AddSingleton<JobStore>();
         builder.Services.AddSingleton(sp => new LineApiClient(sp.GetRequiredService<ApiSettings>().LineOrigin));
+        builder.Services.AddHostedService<DatabaseStartup>();
         builder.Services.AddHostedService<JobWorker>();
         configure?.Invoke(builder);
 
@@ -62,10 +70,26 @@ public static class Program
         app.UseAuthorization();
         app.UseRateLimiter();
 
-        app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+        app.MapGet("/healthz", HealthAsync);
         var api = app.MapGroup("/v1").RequireAuthorization().RequireRateLimiting("client");
         api.MapAccounts();
         api.MapJobs();
         return app;
+    }
+
+    private static async Task<IResult> HealthAsync(Database database, CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            await database.PingAsync(deadline.Token);
+            return Results.Ok(new { status = "ok" });
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested &&
+            ex is MongoException or TimeoutException or OperationCanceledException)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
     }
 }

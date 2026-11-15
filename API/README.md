@@ -1,32 +1,38 @@
 # LINE Jobs API
 
-ASP.NET Core .NET 10. โปรเจกต์อ้างอิง `../LINEAPI/LINEAPI.csproj` โดยตรง
+ASP.NET Core .NET 10, MongoDB Atlas และไลบรารี `../LINEAPI/LINEAPI.csproj`
 
-## ตั้งค่าและรัน
+## ตั้งค่าและ deploy
 
-กำหนดค่าต่อไปนี้ผ่าน environment variables ของเซิร์ฟเวอร์
+1. ใน Atlas สร้าง database user ที่มีสิทธิ์ `readWrite` เฉพาะฐานข้อมูลที่จะใช้ เช่น `linejobs` และใช้คลัสเตอร์ที่รองรับ replica-set transactions
+2. ใน Render สร้าง **Web Service** จาก GitHub รีโปนี้ เลือก **Docker** ปล่อย **Root Directory** ว่าง และใช้ Dockerfile ที่รากรีโป
+3. ในหน้า Service ของ Render เปิด **Connect → Outbound** แล้วเพิ่ม CIDR ของบริการลงใน Atlas **Network Access → IP Access List** ถ้าทดสอบจากเครื่องตัวเอง ให้เพิ่ม IP ของเครื่องนั้นแยกต่างหาก
+4. เพิ่มค่าต่อไปนี้ใน **Environment** ของบริการ Render แล้วตั้ง **Health Check Path** เป็น `/healthz`
 
 | ตัวแปร | ค่า |
 |---|---|
-| `Api__StorageKey` | ค่าสุ่ม 32 ไบต์ในรูป Base64 สำหรับเข้ารหัสข้อมูลในฐานข้อมูล เก็บค่าเดิมเมื่อรีสตาร์ต |
-| `Api__Clients__<clientId>` | SHA-256 แบบ hex 64 ตัวอักษรของ Bearer key ของผู้ใช้แต่ละราย ใช้ค่าสุ่มสำหรับแต่ละราย |
+| `MongoDb__ConnectionString` | Connection string สำหรับ database user จาก Atlas โดยทั่วไปขึ้นต้นด้วย `mongodb+srv://` |
+| `MongoDb__Database` | ชื่อฐานข้อมูล ค่าเริ่มต้น `linejobs` |
+| `Api__StorageKey` | ค่าสุ่ม 32 ไบต์ในรูป Base64 สำหรับเข้ารหัส payload และโทเคน เก็บค่าเดิมตลอดการ deploy |
+| `Api__Clients__<clientId>` | SHA-256 แบบ hex 64 ตัวอักษรของ Bearer key ของผู้ใช้รายนั้น |
 | `Line__UserAgent` | User-Agent สำหรับการเชื่อมต่อ LINE |
-| `Line__Application` | ค่า X-Line-Application ใช้ `\t` แทน Tab ได้ |
-| `Line__BaseUrl` | HTTPS origin ของ LINE ใช้ค่าจาก appsettings.json ได้ |
-| `Line__Locale` | Locale ค่าเริ่มต้น `th_TH` |
+| `Line__Application` | ค่า X-Line-Application รองรับ `\t` แทน Tab |
+| `Line__BaseUrl` | HTTPS origin ของ LINE ใช้ค่าที่กำหนดใน `appsettings.json` ได้ |
+| `Line__Locale` | ค่าเริ่มต้น `th_TH` |
 
-`Api__DatabasePath` กำหนดที่เก็บ SQLite ค่าเริ่มต้น `data/api.db` ส่วน `Api__Workers`, `Api__QueueCapacity`, `Api__MaxActivePerUser` และ `Api__OtpMinutes` ใช้ปรับจำนวนงานและอายุ OTP
+Render กำหนด `PORT` ให้ ตัว API ฟังที่ `0.0.0.0` และใช้พอร์ตนั้น ถ้ารัน Docker โดยไม่มี `PORT` จะใช้ `10000` ค่าที่เป็นความลับให้ตั้งใน Environment ของ Render
+
+สำหรับทดสอบด้วย .NET SDK ในเครื่อง ให้กำหนดค่าชุดเดียวกันเป็น environment variables แล้วรันจากรากรีโป
 
 ```powershell
-Set-Location 'C:\MainProject\Line\API'
-dotnet run --urls http://127.0.0.1:5080
+dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 ```
 
-เมื่อเปิดให้โปรแกรมบนเครื่องอื่นเรียก ให้ใช้ HTTPS ผ่านโฮสต์หรือ reverse proxy
+ใช้ MongoDB replica set ในเครื่องหรือใช้ Atlas ฐานทดสอบแยก ระบบสร้าง collections และ indexes ตอนเริ่มทำงาน `GET /healthz` จะคืน `200` เมื่อ API ติดต่อฐานข้อมูลได้
 
-## สัญญาการเรียก
+## เรียก API
 
-ส่ง `Authorization: Bearer <clientKey>` ทุกคำขอใต้ `/v1` ตัวโปรแกรมเก็บ Bearer key ของผู้ใช้รายนั้นได้ ส่วน storage key ใช้เฉพาะบนเซิร์ฟเวอร์
+ใช้ `Authorization: Bearer <clientKey>` สำหรับทุก route ใต้ `/v1`
 
 | Method | Path | JSON / ผลลัพธ์ |
 |---|---|---|
@@ -38,12 +44,18 @@ dotnet run --urls http://127.0.0.1:5080
 | POST | `/v1/jobs/{jobId}/otp` | `{"code":"012345"}` ใช้ string เพื่อรักษาเลขศูนย์ด้านหน้า |
 | POST | `/v1/accounts` | `{"accessToken":"…"}` ผูกบัญชีเดิม โดยอ่าน Account ID จาก LINE |
 | GET | `/v1/accounts` | รายการ Account ID ที่ผู้ใช้สั่งงานได้ |
-| GET | `/healthz` | สถานะตัว API |
 
-คำขอสร้างงานตอบ `202` พร้อม `jobId` และ `statusUrl` ระบบรองรับ `Idempotency-Key` ในคำขอสร้างงาน ใช้คีย์เดิมเมื่อต้องส่งคำขอเดิมซ้ำหลังเครือข่ายขาด
+คำขอสร้างงานตอบ `202` พร้อม `jobId` และ `statusUrl` ระบบรองรับ `Idempotency-Key` สำหรับส่งคำขอเดิมซ้ำหลังเครือข่ายขาด
 
-เมื่อสถานะเป็น `awaitingOtp` ให้แสดงช่องกรอกรหัส ถ้าส่งทันและได้รับ `202` ให้ดูสถานะต่อ ผลสมัครสำเร็จคืน `result.accountId` เพื่อใช้กับงานเพิ่มเพื่อนหรือสร้างกลุ่ม ผลสร้างกลุ่มคืน `result.groupId` งานเพิ่มเพื่อนคืน `result.friendIds`
+เมื่อสถานะเป็น `awaitingOtp` ให้แสดงช่องกรอกรหัส แล้วดูสถานะต่อหลังส่งผลสำเร็จ บัญชีที่สมัครสำเร็จคืน `result.accountId` งานเพิ่มเพื่อนคืน `result.friendIds` และงานสร้างกลุ่มคืน `result.groupId`
 
-`409 accountBusy` หมายถึงมีงานที่ใช้งานบัญชีหรือเบอร์สมัครอยู่แล้ว `410 otpExpired` หมายถึงหมดเวลาส่งรหัส `429 queueFull` หมายถึงถึงขีดจำกัดคิว ถ้า API หยุดระหว่างทำงาน สถานะ `interrupted` ให้ตรวจผลกับ LINE ก่อนส่งงานใหม่
+`409 accountBusy` หมายถึงมีงานที่กำลังใช้บัญชีหรือเบอร์นั้น `410 otpExpired` หมายถึงหมดเวลาส่งรหัส และ `429 queueFull` หมายถึงถึงขีดจำกัดคิว
 
-รุ่นนี้ใช้ API instance เดียวต่อไฟล์ SQLite และมี Worker หลายตัวใน instance เดียว การรอ OTP ไม่ใช้ช่อง Worker รุ่นนี้รองรับการสมัครด้วย SMS และสร้างกลุ่มพื้นฐาน Caller เป็นผู้ส่ง revision ของคำขอเพิ่มเพื่อนและสร้างกลุ่ม
+## คิวและการออกเวอร์ชันใหม่
+
+- จำนวน Worker และขีดจำกัดคิวตั้งได้ผ่าน `Api__Workers`, `Api__QueueCapacity`, `Api__MaxActivePerUser` และ `Api__OtpMinutes`
+- งานที่รอ OTP คืนช่อง Worker และหมดอายุตามเวลาที่กำหนด ข้อมูลเซสชันที่ยังไม่หมดอายุอยู่ต่อหลังรีสตาร์ต
+- ขณะ deploy มี API/Worker สอง instance ใช้ฐานเดียวกันได้ชั่วคราว การรับงานและล็อกบัญชีอยู่ใน MongoDB
+- ถ้า Worker หายไปขณะงานกำลังทำ สถานะจะเป็น `interrupted` หลังสิทธิ์ประมวลผลงานหมดอายุ ให้ตรวจผลบน LINE ก่อนส่งงานใหม่
+- รุ่นนี้รองรับสมัครด้วย SMS และสร้างกลุ่มพื้นฐาน ผู้เรียกยังเป็นผู้ส่ง revision ของงานเพิ่มเพื่อนและสร้างกลุ่ม
+- การ deploy ชุดนี้สร้างข้อมูลบน MongoDB ฐานใหม่ หากมีข้อมูลทดสอบใน SQLite รุ่นเดิม ให้เก็บไฟล์เดิมไว้สำหรับนำเข้าในงานแยก

@@ -10,10 +10,12 @@ internal static class AccountEndpoints
     internal static void MapAccounts(this RouteGroupBuilder api)
     {
         var routes = api.MapGroup("/accounts");
-        routes.MapGet("", (HttpContext context, AccountStore accounts) =>
-            Results.Ok(accounts.List(JobEndpoints.Owner(context)).Select(id => new AccountResponse(id))));
+        routes.MapGet("", ListAsync);
         routes.MapPost("", LinkAsync);
     }
+
+    private static async Task<IResult> ListAsync(HttpContext context, AccountStore accounts, CancellationToken ct) =>
+        Results.Ok((await accounts.ListAsync(JobEndpoints.Owner(context), ct)).Select(id => new AccountResponse(id)));
 
     private static async Task<IResult> LinkAsync(
         LinkAccountRequest request, HttpContext context, AccountStore accounts, ApiSettings settings, LineApiClient line,
@@ -31,7 +33,7 @@ internal static class AccountEndpoints
                 return Results.Problem(statusCode: StatusCodes.Status502BadGateway, title: "Invalid LINE account response.");
 
             var account = accounts.Protect(id, JobEndpoints.Owner(context), new AccountSecret(token));
-            return accounts.Link(account) == StoreOutcome.Applied
+            return await accounts.LinkAsync(account, ct) == StoreOutcome.Applied
                 ? Results.Ok(new AccountResponse(id))
                 : Results.Conflict(new ApiError("accountUnavailable"));
         }

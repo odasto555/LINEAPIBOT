@@ -25,7 +25,7 @@ internal sealed record JobStatus(
     Guid Id, JobKind Kind, JobState State, string Stage, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     DateTimeOffset? OtpExpiresAt, JobResult? Result, JobError? Error);
 
-internal sealed record ClaimedJob(Guid Id, string Owner, JobKind Kind, string Payload);
+internal sealed record ClaimedJob(Guid Id, string Owner, JobKind Kind, string Payload, string LeaseId);
 internal sealed record AccountSecret(string AccessToken, string? RefreshToken = null);
 internal sealed record AccountWrite(string Id, string Owner, string EncryptedSecret);
 internal sealed record RegistrationWork(
@@ -39,6 +39,8 @@ internal sealed class JobRejectedException(string code) : Exception(code)
 {
     internal string Code => Message;
 }
+
+internal sealed class JobLeaseLostException : Exception;
 
 internal enum StoreOutcome { Applied, DuplicateAccount, DuplicateRequest, Full, NotFound, WrongState, Expired }
 internal sealed record EnqueueResult(StoreOutcome Outcome, Guid Id);

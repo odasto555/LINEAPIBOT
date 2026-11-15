@@ -1,219 +1,217 @@
-using System.Text.Json;
 using LineJobs.Configuration;
 using LineJobs.Jobs;
 using LineJobs.Security;
-using Microsoft.Data.Sqlite;
+using MongoDB.Driver;
 
 namespace LineJobs.Storage;
 
 internal sealed class JobStore(Database database, ApiSettings settings, SecretStore secrets)
 {
-    private const string StatusColumns = "id,kind,state,stage,created_at,updated_at,otp_expires_at,result,error";
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly FilterDefinitionBuilder<JobDocument> Filter = Builders<JobDocument>.Filter;
+    private static readonly UpdateDefinitionBuilder<JobDocument> Update = Builders<JobDocument>.Update;
+    private static readonly FilterDefinition<JobDocument> Active = Filter.Eq(x => x.Active, true);
 
-    internal EnqueueResult Enqueue(EnqueueRequest job)
+    internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(2);
+
+    internal async Task<EnqueueResult> EnqueueAsync(EnqueueRequest job, CancellationToken ct)
     {
-        using var db = database.Open();
-        using var tx = db.BeginTransaction(deferred: false);
-        if (job.RequestId is not null)
+        var resource = Filter.Eq(x => x.ResourceKey, job.ResourceKey);
+        var cutoff = DateTime.UtcNow;
+        await database.Jobs.UpdateManyAsync(ExpiredOtp(cutoff) & resource,
+            Terminal(JobState.Expired, cutoff).Set(x => x.Error, JobDocument.Encode(new JobError("otpExpired"))),
+            cancellationToken: ct);
+
+        return await database.WithAdmissionLockAsync(async (session, token) =>
         {
-            using var lookup = db.Sql("SELECT id,fingerprint FROM jobs WHERE owner=$owner AND request_id=$key;", tx,
-                ("$owner", job.Owner), ("$key", job.RequestId));
-            using var row = lookup.ExecuteReader();
-            if (row.Read())
-                return row.GetString(1) == job.Fingerprint
-                    ? new EnqueueResult(StoreOutcome.Applied, Guid.Parse(row.GetString(0)))
-                    : new EnqueueResult(StoreOutcome.DuplicateRequest, Guid.Empty);
-        }
-
-        var now = UtcNow();
-        Expire(db, tx, now);
-        using (var active = db.Sql("""
-            SELECT EXISTS(SELECT 1 FROM jobs WHERE resource_key=$key AND state IN ('Queued','Running','AwaitingOtp'));
-            """, tx, ("$key", job.ResourceKey)))
-        {
-            if ((long)active.ExecuteScalar()! == 1)
-                return new EnqueueResult(StoreOutcome.DuplicateAccount, Guid.Empty);
-        }
-
-        using (var capacity = db.Sql("""
-            SELECT COUNT(*),COUNT(CASE WHEN owner=$owner THEN 1 END)
-            FROM jobs WHERE state IN ('Queued','Running','AwaitingOtp');
-            """, tx, ("$owner", job.Owner)))
-        {
-            using var row = capacity.ExecuteReader();
-            row.Read();
-            if (row.GetInt64(0) >= settings.QueueCapacity || row.GetInt64(1) >= settings.MaxActivePerUser)
-                return new EnqueueResult(StoreOutcome.Full, Guid.Empty);
-        }
-
-        using var insert = db.Sql("""
-            INSERT INTO jobs (id,owner,kind,resource_key,state,stage,payload,created_at,updated_at,request_id,fingerprint)
-            VALUES ($id,$owner,$kind,$resource,'Queued',$stage,$payload,$now,$now,$key,$fingerprint);
-            """, tx, ("$id", job.Id.ToString()), ("$owner", job.Owner), ("$kind", job.Kind.ToString()),
-            ("$resource", job.ResourceKey), ("$stage", job.Stage), ("$payload", job.Payload),
-            ("$now", now), ("$key", job.RequestId), ("$fingerprint", job.Fingerprint));
-        insert.ExecuteNonQuery();
-        tx.Commit();
-        return new EnqueueResult(StoreOutcome.Applied, job.Id);
-    }
-
-    internal JobStatus? Get(string owner, Guid id)
-    {
-        using var db = database.Open();
-        using var cmd = db.Sql($"SELECT {StatusColumns} FROM jobs WHERE id=$id AND owner=$owner;", null,
-            ("$id", id.ToString()), ("$owner", owner));
-        using var row = cmd.ExecuteReader();
-        return row.Read() ? ReadStatus(row) : null;
-    }
-
-    internal IReadOnlyList<JobStatus> List(string owner, int limit)
-    {
-        using var db = database.Open();
-        using var cmd = db.Sql($"SELECT {StatusColumns} FROM jobs WHERE owner=$owner ORDER BY created_at DESC,rowid DESC LIMIT $limit;",
-            null, ("$owner", owner), ("$limit", limit));
-        using var rows = cmd.ExecuteReader();
-        var jobs = new List<JobStatus>();
-        while (rows.Read())
-            jobs.Add(ReadStatus(rows));
-        return jobs;
-    }
-
-    internal ClaimedJob? Claim()
-    {
-        using var db = database.Open();
-        using var cmd = db.Sql("""
-            UPDATE jobs SET state='Running',updated_at=$now
-            WHERE id=(
-                SELECT id FROM jobs WHERE state='Queued' AND (otp_expires_at IS NULL OR otp_expires_at>$now)
-                ORDER BY updated_at,rowid LIMIT 1
-            )
-            RETURNING id,owner,kind,payload;
-            """, null, ("$now", UtcNow()));
-        using var row = cmd.ExecuteReader();
-        return row.Read()
-            ? new ClaimedJob(Guid.Parse(row.GetString(0)), row.GetString(1),
-                Enum.Parse<JobKind>(row.GetString(2)), row.GetString(3))
-            : null;
-    }
-
-    internal void SetStage(Guid id, string stage)
-    {
-        using var db = database.Open();
-        using var cmd = db.Sql("UPDATE jobs SET stage=$stage,updated_at=$now WHERE id=$id AND state='Running';", null,
-            ("$id", id.ToString()), ("$stage", stage), ("$now", UtcNow()));
-        EnsureUpdated(cmd);
-    }
-
-    internal void AwaitOtp(Guid id, RegistrationWork work)
-    {
-        using var db = database.Open();
-        var now = DateTimeOffset.UtcNow;
-        using var cmd = db.Sql("""
-            UPDATE jobs SET state='AwaitingOtp',stage='awaitingOtp',payload=$payload,updated_at=$now,otp_expires_at=$expires
-            WHERE id=$id AND state='Running';
-            """, null, ("$id", id.ToString()), ("$now", now.ToUnixTimeMilliseconds()),
-            ("$expires", now.AddMinutes(settings.OtpMinutes).ToUnixTimeMilliseconds()), ("$payload", Seal(id, work)));
-        EnsureUpdated(cmd);
-    }
-
-    internal StoreOutcome SubmitOtp(string owner, Guid id, string code)
-    {
-        using var db = database.Open();
-        using var tx = db.BeginTransaction(deferred: false);
-        using var select = db.Sql("SELECT state,kind,otp_expires_at,payload FROM jobs WHERE id=$id AND owner=$owner;", tx,
-            ("$id", id.ToString()), ("$owner", owner));
-        string payload;
-        using (var row = select.ExecuteReader())
-        {
-            if (!row.Read())
-                return StoreOutcome.NotFound;
-            var state = Enum.Parse<JobState>(row.GetString(0));
-            if (state == JobState.Expired)
-                return StoreOutcome.Expired;
-            if (state != JobState.AwaitingOtp || row.GetString(1) != nameof(JobKind.Registration))
-                return StoreOutcome.WrongState;
-            if (row.GetInt64(2) <= UtcNow())
+            if (job.RequestId is not null)
             {
-                row.Close();
-                Expire(db, tx, UtcNow());
-                tx.Commit();
-                return StoreOutcome.Expired;
+                var existing = await database.Jobs.Find(session, item => item.Owner == job.Owner && item.RequestId == job.RequestId)
+                    .FirstOrDefaultAsync(token);
+                if (existing is not null)
+                    return existing.Fingerprint == job.Fingerprint
+                        ? new EnqueueResult(StoreOutcome.Applied, Guid.Parse(existing.Id))
+                        : new EnqueueResult(StoreOutcome.DuplicateRequest, Guid.Empty);
             }
-            var work = secrets.Open<RegistrationWork>(Scope(id), row.GetString(3));
-            payload = Seal(id, work with { Otp = code });
+
+            var now = DateTime.UtcNow;
+            if (await database.Jobs.Find(session, Active & resource).AnyAsync(token))
+                return new EnqueueResult(StoreOutcome.DuplicateAccount, Guid.Empty);
+
+            var total = await database.Jobs.CountDocumentsAsync(session, Active, cancellationToken: token);
+            var count = await database.Jobs.CountDocumentsAsync(session, Active & Filter.Eq(x => x.Owner, job.Owner),
+                cancellationToken: token);
+            if (total >= settings.QueueCapacity || count >= settings.MaxActivePerUser)
+                return new EnqueueResult(StoreOutcome.Full, Guid.Empty);
+
+            await database.Jobs.InsertOneAsync(session, new JobDocument
+            {
+                Id = job.Id.ToString(),
+                Owner = job.Owner,
+                Kind = job.Kind,
+                ResourceKey = job.ResourceKey,
+                State = JobState.Queued,
+                Active = true,
+                Stage = job.Stage,
+                Payload = job.Payload,
+                CreatedAt = now,
+                UpdatedAt = now,
+                RequestId = job.RequestId,
+                Fingerprint = job.Fingerprint
+            }, cancellationToken: token);
+            return new EnqueueResult(StoreOutcome.Applied, job.Id);
+        }, ct);
+    }
+
+    internal async Task<JobStatus?> GetAsync(string owner, Guid id, CancellationToken ct) =>
+        (await database.Jobs.Find(Owned(owner, id)).FirstOrDefaultAsync(ct))?.Status();
+
+    internal async Task<IReadOnlyList<JobStatus>> ListAsync(string owner, int limit, CancellationToken ct)
+    {
+        var items = await database.Jobs.Find(x => x.Owner == owner).SortByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id).Limit(limit).ToListAsync(ct);
+        return items.Select(x => x.Status()).ToArray();
+    }
+
+    internal async Task<ClaimedJob?> ClaimAsync(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var leaseId = Guid.NewGuid().ToString();
+        var filter = Filter.Eq(x => x.State, JobState.Queued) &
+                     (Filter.Eq(x => x.OtpExpiresAt, null) | Filter.Gt(x => x.OtpExpiresAt, now));
+        var update = Update.Set(x => x.State, JobState.Running).Set(x => x.UpdatedAt, now)
+            .Set(x => x.LeaseId, leaseId).Set(x => x.LeaseUntil, now + LeaseDuration);
+        var job = await database.Jobs.FindOneAndUpdateAsync(filter, update, new FindOneAndUpdateOptions<JobDocument>
+        {
+            Sort = Builders<JobDocument>.Sort.Ascending(x => x.UpdatedAt).Ascending(x => x.Id),
+            ReturnDocument = ReturnDocument.After
+        }, ct);
+
+        return job is null ? null : new ClaimedJob(Guid.Parse(job.Id), job.Owner, job.Kind, job.Payload!, leaseId);
+    }
+
+    internal async Task<bool> RenewAsync(ClaimedJob job, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var result = await database.Jobs.UpdateOneAsync(Running(job, now),
+            Update.Set(x => x.LeaseUntil, now + LeaseDuration), cancellationToken: ct);
+        return result.MatchedCount == 1;
+    }
+
+    internal Task SetStageAsync(ClaimedJob job, string stage, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        return UpdateOwnedAsync(job, Update.Set(x => x.Stage, stage).Set(x => x.UpdatedAt, now), now, ct);
+    }
+
+    internal Task AwaitOtpAsync(ClaimedJob job, RegistrationWork work, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        return UpdateOwnedAsync(job, Update.Set(x => x.State, JobState.AwaitingOtp).Set(x => x.Stage, "awaitingOtp")
+            .Set(x => x.Payload, Seal(job.Id, work)).Set(x => x.UpdatedAt, now)
+            .Set(x => x.OtpExpiresAt, now.AddMinutes(settings.OtpMinutes))
+            .Unset(x => x.LeaseUntil).Unset(x => x.LeaseId), now, ct);
+    }
+
+    internal async Task<StoreOutcome> SubmitOtpAsync(string owner, Guid id, string code, CancellationToken ct)
+    {
+        var owned = Owned(owner, id);
+        var existing = await database.Jobs.Find(owned).FirstOrDefaultAsync(ct);
+        if (existing is null)
+            return StoreOutcome.NotFound;
+        if (existing.State == JobState.Expired)
+            return StoreOutcome.Expired;
+        if (existing.State != JobState.AwaitingOtp || existing.Kind != JobKind.Registration)
+            return StoreOutcome.WrongState;
+
+        var now = DateTime.UtcNow;
+        if (existing.OtpExpiresAt > now)
+        {
+            var work = secrets.Open<RegistrationWork>(Scope(id), existing.Payload!);
+            now = DateTime.UtcNow;
+            var ready = owned & Filter.Eq(x => x.State, JobState.AwaitingOtp) & Filter.Gt(x => x.OtpExpiresAt, now);
+            var updated = await database.Jobs.UpdateOneAsync(ready,
+                Update.Set(x => x.State, JobState.Queued).Set(x => x.Stage, "verifyOtp")
+                    .Set(x => x.Payload, Seal(id, work with { Otp = code })).Set(x => x.UpdatedAt, now),
+                cancellationToken: ct);
+            if (updated.MatchedCount == 1)
+                return StoreOutcome.Applied;
         }
 
-        var now = UtcNow();
-        using var update = db.Sql("""
-            UPDATE jobs SET state='Queued',stage='verifyOtp',payload=$payload,updated_at=$now
-            WHERE id=$id AND state='AwaitingOtp' AND otp_expires_at>$now;
-            """, tx, ("$id", id.ToString()), ("$payload", payload), ("$now", now));
-        var updated = update.ExecuteNonQuery() == 1;
-        if (!updated)
-            Expire(db, tx, now);
-        tx.Commit();
-        return updated ? StoreOutcome.Applied : StoreOutcome.Expired;
+        var expired = await database.Jobs.UpdateOneAsync(owned & Filter.Eq(x => x.State, JobState.AwaitingOtp)
+            & Filter.Lte(x => x.OtpExpiresAt, now), Terminal(JobState.Expired, now)
+            .Set(x => x.Error, JobDocument.Encode(new JobError("otpExpired"))), cancellationToken: ct);
+
+        if (expired.MatchedCount == 1)
+            return StoreOutcome.Expired;
+        var current = await database.Jobs.Find(owned).FirstOrDefaultAsync(ct);
+        return current?.State == JobState.Expired ? StoreOutcome.Expired : StoreOutcome.WrongState;
     }
 
-    internal void Complete(Guid id, JobResult result, AccountWrite? account = null)
+    internal async Task CompleteAsync(ClaimedJob job, JobResult result, AccountWrite? account, CancellationToken ct)
     {
-        using var db = database.Open();
-        using var tx = db.BeginTransaction(deferred: false);
-        if (account is not null && !AccountStore.Save(db, tx, account))
-            throw new JobRejectedException("accountAlreadyLinked");
+        var serialized = JobDocument.Encode(result);
+        if (account is null)
+        {
+            var now = DateTime.UtcNow;
+            await UpdateOwnedAsync(job, Terminal(JobState.Succeeded, now).Set(x => x.Stage, "done")
+                .Set(x => x.Result, serialized), now, ct);
+            return;
+        }
 
-        using var cmd = db.Sql("""
-            UPDATE jobs SET state='Succeeded',stage='done',updated_at=$now,result=$result,
-                payload=NULL,otp_expires_at=NULL WHERE id=$id AND state='Running';
-            """, tx, ("$id", id.ToString()), ("$now", UtcNow()), ("$result", JsonSerializer.Serialize(result, Json)));
-        EnsureUpdated(cmd);
-        tx.Commit();
+        await database.WithAdmissionLockAsync(async (session, token) =>
+        {
+            var now = DateTime.UtcNow;
+            var update = Terminal(JobState.Succeeded, now).Set(x => x.Stage, "done").Set(x => x.Result, serialized);
+            var updated = await database.Jobs.UpdateOneAsync(session, Running(job, now), update, cancellationToken: token);
+            if (updated.MatchedCount != 1)
+                throw new JobLeaseLostException();
+
+            if (!await AccountStore.SaveAsync(database.Accounts, session, account, token))
+                throw new JobRejectedException("accountAlreadyLinked");
+            return true;
+        }, ct);
     }
 
-    internal void Fail(Guid id, JobError error, JobState state = JobState.Failed)
+    internal Task FailAsync(ClaimedJob job, JobError error, JobState state, CancellationToken ct)
     {
-        using var db = database.Open();
-        using var cmd = db.Sql("""
-            UPDATE jobs SET state=$state,updated_at=$now,error=$error,payload=NULL,otp_expires_at=NULL
-            WHERE id=$id AND state='Running';
-            """, null, ("$id", id.ToString()), ("$state", state.ToString()), ("$now", UtcNow()),
-            ("$error", JsonSerializer.Serialize(error, Json)));
-        EnsureUpdated(cmd);
+        var now = DateTime.UtcNow;
+        return database.Jobs.UpdateOneAsync(Running(job, now),
+            Terminal(state, now).Set(x => x.Error, JobDocument.Encode(error)), cancellationToken: ct);
     }
 
-    internal void Expire()
+    internal async Task ExpireAsync(CancellationToken ct)
     {
-        using var db = database.Open();
-        Expire(db, null, UtcNow());
+        var now = DateTime.UtcNow;
+        await database.Jobs.UpdateManyAsync(ExpiredOtp(now), Terminal(JobState.Expired, now)
+            .Set(x => x.Error, JobDocument.Encode(new JobError("otpExpired"))), cancellationToken: ct);
+        await database.Jobs.UpdateManyAsync(Filter.Eq(x => x.State, JobState.Running) & Filter.Lte(x => x.LeaseUntil, now),
+            Terminal(JobState.Interrupted, now).Set(x => x.Error, JobDocument.Encode(new JobError("serverInterrupted"))),
+            cancellationToken: ct);
     }
 
     internal string Seal<T>(Guid id, T value) => secrets.Seal(Scope(id), value);
     internal T Read<T>(ClaimedJob job) => secrets.Open<T>(Scope(job.Id), job.Payload);
 
-    private static void Expire(SqliteConnection db, SqliteTransaction? tx, long now)
+    private async Task UpdateOwnedAsync(ClaimedJob job, UpdateDefinition<JobDocument> update, DateTime now, CancellationToken ct)
     {
-        using var cmd = db.Sql("""
-            UPDATE jobs SET state='Expired',updated_at=$now,payload=NULL,otp_expires_at=NULL,error='{"code":"otpExpired"}'
-            WHERE state IN ('AwaitingOtp','Queued') AND otp_expires_at<=$now;
-            """, tx, ("$now", now));
-        cmd.ExecuteNonQuery();
+        var updated = await database.Jobs.UpdateOneAsync(Running(job, now), update, cancellationToken: ct);
+        if (updated.MatchedCount != 1)
+            throw new JobLeaseLostException();
     }
 
-    private static void EnsureUpdated(SqliteCommand cmd)
-    {
-        if (cmd.ExecuteNonQuery() != 1)
-            throw new InvalidOperationException("Job state changed unexpectedly.");
-    }
+    private static FilterDefinition<JobDocument> Owned(string owner, Guid id) =>
+        Filter.Eq(x => x.Id, id.ToString()) & Filter.Eq(x => x.Owner, owner);
 
-    private static JobStatus ReadStatus(SqliteDataReader row) => new(
-        Guid.Parse(row.GetString(0)), Enum.Parse<JobKind>(row.GetString(1)), Enum.Parse<JobState>(row.GetString(2)),
-        row.GetString(3), DateTimeOffset.FromUnixTimeMilliseconds(row.GetInt64(4)),
-        DateTimeOffset.FromUnixTimeMilliseconds(row.GetInt64(5)),
-        row.IsDBNull(6) ? null : DateTimeOffset.FromUnixTimeMilliseconds(row.GetInt64(6)),
-        row.Text(7) is { } result ? JsonSerializer.Deserialize<JobResult>(result, Json) : null,
-        row.Text(8) is { } error ? JsonSerializer.Deserialize<JobError>(error, Json) : null);
+    private static FilterDefinition<JobDocument> Running(ClaimedJob job, DateTime now) =>
+        Filter.Eq(x => x.Id, job.Id.ToString()) & Filter.Eq(x => x.State, JobState.Running) &
+        Filter.Eq(x => x.LeaseId, job.LeaseId) & Filter.Gt(x => x.LeaseUntil, now);
+
+    private static FilterDefinition<JobDocument> ExpiredOtp(DateTime now) =>
+        Filter.In(x => x.State, new[] { JobState.AwaitingOtp, JobState.Queued }) & Filter.Lte(x => x.OtpExpiresAt, now);
+
+    private static UpdateDefinition<JobDocument> Terminal(JobState state, DateTime now) =>
+        Update.Set(x => x.State, state).Set(x => x.Active, false).Set(x => x.UpdatedAt, now)
+            .Unset(x => x.Payload).Unset(x => x.OtpExpiresAt).Unset(x => x.LeaseUntil).Unset(x => x.LeaseId);
 
     private static string Scope(Guid id) => $"job:{id}";
-    private static long UtcNow() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 }

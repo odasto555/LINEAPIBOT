@@ -1,66 +1,50 @@
 using LineJobs.Jobs;
 using LineJobs.Security;
-using Microsoft.Data.Sqlite;
+using MongoDB.Driver;
 
 namespace LineJobs.Storage;
 
 internal sealed class AccountStore(Database database, SecretStore secrets)
 {
-    internal bool Exists(string owner, string id)
-    {
-        using var db = database.Open();
-        using var cmd = db.Sql("SELECT 1 FROM accounts WHERE id=$id AND owner=$owner;", null, ("$id", id), ("$owner", owner));
-        return cmd.ExecuteScalar() is not null;
-    }
+    internal async Task<bool> ExistsAsync(string owner, string id, CancellationToken ct) =>
+        await database.Accounts.Find(account => account.Owner == owner && account.Id == id).AnyAsync(ct);
 
-    internal AccountSecret Get(string owner, string id)
+    internal async Task<AccountSecret> GetAsync(string owner, string id, CancellationToken ct)
     {
-        using var db = database.Open();
-        using var cmd = db.Sql("SELECT secret FROM accounts WHERE id=$id AND owner=$owner;", null, ("$id", id), ("$owner", owner));
-        return cmd.ExecuteScalar() is string encrypted
-            ? secrets.Open<AccountSecret>(Scope(id, owner), encrypted)
+        var account = await database.Accounts.Find(a => a.Id == id && a.Owner == owner).FirstOrDefaultAsync(ct);
+        return account is not null
+            ? secrets.Open<AccountSecret>(Scope(id, owner), account.Secret)
             : throw new JobRejectedException("accountNotFound");
     }
 
-    internal IReadOnlyList<string> List(string owner)
-    {
-        using var db = database.Open();
-        using var cmd = db.Sql("SELECT id FROM accounts WHERE owner=$owner ORDER BY id LIMIT 500;", null, ("$owner", owner));
-        using var rows = cmd.ExecuteReader();
-        var ids = new List<string>();
-        while (rows.Read())
-            ids.Add(rows.GetString(0));
-        return ids;
-    }
+    internal async Task<IReadOnlyList<string>> ListAsync(string owner, CancellationToken ct) =>
+        await database.Accounts.Find(account => account.Owner == owner).SortBy(account => account.Id)
+            .Limit(500).Project(account => account.Id).ToListAsync(ct);
 
-    internal StoreOutcome Link(AccountWrite account)
-    {
-        using var db = database.Open();
-        using var tx = db.BeginTransaction(deferred: false);
-        using var active = db.Sql("""
-            SELECT EXISTS(SELECT 1 FROM jobs WHERE resource_key=$key AND state IN ('Queued','Running','AwaitingOtp'));
-            """, tx, ("$key", Resource(account.Id)));
-        if ((long)active.ExecuteScalar()! == 1)
-            return StoreOutcome.DuplicateAccount;
-        if (!Save(db, tx, account))
-            return StoreOutcome.DuplicateAccount;
-
-        tx.Commit();
-        return StoreOutcome.Applied;
-    }
+    internal Task<StoreOutcome> LinkAsync(AccountWrite account, CancellationToken ct) =>
+        database.WithAdmissionLockAsync(async (session, token) =>
+        {
+            var resource = Resource(account.Id);
+            if (await database.Jobs.Find(session, job => job.Active && job.ResourceKey == resource).AnyAsync(token))
+                return StoreOutcome.DuplicateAccount;
+            return await SaveAsync(database.Accounts, session, account, token) ? StoreOutcome.Applied : StoreOutcome.DuplicateAccount;
+        }, ct);
 
     internal AccountWrite Protect(string id, string owner, AccountSecret secret) =>
         new(id, owner, secrets.Seal(Scope(id, owner), secret));
 
     internal static string Resource(string id) => $"account:{id}";
 
-    internal static bool Save(SqliteConnection db, SqliteTransaction tx, AccountWrite account)
+    internal static async Task<bool> SaveAsync(
+        IMongoCollection<AccountDocument> accounts, IClientSessionHandle session, AccountWrite account, CancellationToken ct)
     {
-        using var cmd = db.Sql("""
-            INSERT INTO accounts (id,owner,secret) VALUES ($id,$owner,$secret)
-            ON CONFLICT(id) DO UPDATE SET secret=excluded.secret WHERE accounts.owner=excluded.owner;
-            """, tx, ("$id", account.Id), ("$owner", account.Owner), ("$secret", account.EncryptedSecret));
-        return cmd.ExecuteNonQuery() == 1;
+        var existing = await accounts.Find(session, a => a.Id == account.Id).FirstOrDefaultAsync(ct);
+        if (existing is not null && !string.Equals(existing.Owner, account.Owner, StringComparison.Ordinal))
+            return false;
+
+        await accounts.ReplaceOneAsync(session, a => a.Id == account.Id,
+            new AccountDocument(account.Id, account.Owner, account.EncryptedSecret), new ReplaceOptions { IsUpsert = true }, ct);
+        return true;
     }
 
     private static string Scope(string id, string owner) => $"account:{owner}:{id}";

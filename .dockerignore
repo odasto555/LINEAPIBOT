@@ -1,0 +1,13 @@
+.git
+**/bin
+**/obj
+**/.vs
+**/data
+**/*.db
+**/*.db-*
+**/*.db.lock
+**/appsettings.Local.json
+**/.env
+**/.env.*
+**/*.pfx
+**/*.pem

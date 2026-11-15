@@ -6,7 +6,8 @@ internal sealed class ApiSettings
 {
     private ApiSettings() { }
 
-    internal required string DatabasePath { get; init; }
+    internal required string MongoConnectionString { get; init; }
+    internal required string MongoDatabaseName { get; init; }
     internal required byte[] StorageKey { get; init; }
     internal required IReadOnlyDictionary<string, byte[]> Clients { get; init; }
     internal required Uri LineOrigin { get; init; }
@@ -16,7 +17,7 @@ internal sealed class ApiSettings
     internal int MaxActivePerUser { get; init; }
     internal int OtpMinutes { get; init; }
 
-    internal static ApiSettings Read(IConfiguration configuration, string root)
+    internal static ApiSettings Read(IConfiguration configuration)
     {
         var clients = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         foreach (var client in configuration.GetSection("Api:Clients").GetChildren())
@@ -42,7 +43,8 @@ internal sealed class ApiSettings
         var capacity = ReadInt(configuration, "Api:QueueCapacity", 500, 1, 100_000);
         return new ApiSettings
         {
-            DatabasePath = Path.GetFullPath(configuration["Api:DatabasePath"] ?? "data/api.db", root),
+            MongoConnectionString = Required(configuration, "MongoDb:ConnectionString"),
+            MongoDatabaseName = Required(configuration, "MongoDb:Database"),
             StorageKey = key,
             Clients = clients,
             LineOrigin = new Uri(Required(configuration, "Line:BaseUrl"), UriKind.Absolute),

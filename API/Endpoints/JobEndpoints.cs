@@ -18,23 +18,23 @@ internal static class JobEndpoints
         routes.MapGet("", List);
     }
 
-    private static IResult Register(RegisterRequest request, HttpContext context, JobStore jobs, SecretStore secrets)
+    private static Task<IResult> Register(RegisterRequest request, HttpContext context, JobStore jobs, SecretStore secrets, CancellationToken ct)
     {
         if (!RequestValidation.IsE164(request.PhoneNumber))
-            return Invalid("phoneNumber", "Use an international phone number in E.164 format.");
+            return Task.FromResult(Invalid("phoneNumber", "Use an international phone number in E.164 format."));
         if (!RequestValidation.IsCountry(request.CountryCode))
-            return Invalid("countryCode", "Use a two-letter country code.");
+            return Task.FromResult(Invalid("countryCode", "Use a two-letter country code."));
         if (!RequestValidation.HasText(request.DisplayName, 128) || !RequestValidation.HasText(request.Password, 128) ||
             !RequestValidation.HasText(request.DeviceId, 128) || !RequestValidation.HasText(request.DeviceModel, 128))
-            return Invalid("registration", "Display name, password, device ID, and device model are required.");
+            return Task.FromResult(Invalid("registration", "Display name, password, device ID, and device model are required."));
 
         var work = new RegistrationWork(request.PhoneNumber!, request.CountryCode!.ToUpperInvariant(),
             request.DisplayName!.Trim(), request.Password!, request.DeviceId!, request.DeviceModel!);
         return Enqueue(context, jobs, secrets, JobKind.Registration,
-            $"phone:{secrets.Fingerprint("registration-phone", work.PhoneNumber)}", work, "openSession");
+            $"phone:{secrets.Fingerprint("registration-phone", work.PhoneNumber)}", work, "openSession", ct);
     }
 
-    private static IResult AddFriends(AddFriendsRequest request, HttpContext context, JobStore jobs, AccountStore accounts, SecretStore secrets)
+    private static async Task<IResult> AddFriends(AddFriendsRequest request, HttpContext context, JobStore jobs, AccountStore accounts, SecretStore secrets, CancellationToken ct)
     {
         if (!RequestValidation.TryUserId(request.AccountId, out var id))
             return Invalid("accountId", "A LINE account ID is required.");
@@ -43,15 +43,15 @@ internal static class JobEndpoints
             return Invalid("phoneNumbers", "Provide 1 to 100 phone numbers.");
         if (request.Revision is not >= 0 || request.SequenceId is < 0)
             return Invalid("revision", "Revision is required and both revision and sequence ID must be nonnegative.");
-        if (!accounts.Exists(Owner(context), id))
+        if (!await accounts.ExistsAsync(Owner(context), id, ct))
             return Results.NotFound(new ApiError("accountNotFound"));
 
         var work = new AddFriendsWork(id, phones.Select(phone => phone.TrimStart('+')).ToArray(),
             request.Revision.Value, request.SequenceId ?? 1);
-        return Enqueue(context, jobs, secrets, JobKind.AddFriends, AccountStore.Resource(id), work, "syncContacts");
+        return await Enqueue(context, jobs, secrets, JobKind.AddFriends, AccountStore.Resource(id), work, "syncContacts", ct);
     }
 
-    private static IResult CreateGroup(CreateGroupRequest request, HttpContext context, JobStore jobs, AccountStore accounts, SecretStore secrets)
+    private static async Task<IResult> CreateGroup(CreateGroupRequest request, HttpContext context, JobStore jobs, AccountStore accounts, SecretStore secrets, CancellationToken ct)
     {
         if (!RequestValidation.TryUserId(request.AccountId, out var id))
             return Invalid("accountId", "A LINE account ID is required.");
@@ -72,18 +72,18 @@ internal static class JobEndpoints
                 members.Add(member);
         }
 
-        if (!accounts.Exists(Owner(context), id))
+        if (!await accounts.ExistsAsync(Owner(context), id, ct))
             return Results.NotFound(new ApiError("accountNotFound"));
         var work = new CreateGroupWork(id, request.Name!.Trim(), members.ToArray(), request.Revision.Value);
-        return Enqueue(context, jobs, secrets, JobKind.CreateGroup, AccountStore.Resource(id), work, "createGroup");
+        return await Enqueue(context, jobs, secrets, JobKind.CreateGroup, AccountStore.Resource(id), work, "createGroup", ct);
     }
 
-    private static IResult SubmitOtp(Guid id, OtpRequest request, JobStore jobs, HttpContext context)
+    private static async Task<IResult> SubmitOtp(Guid id, OtpRequest request, JobStore jobs, HttpContext context, CancellationToken ct)
     {
         if (request.Code is not { Length: >= 4 and <= 12 } code || !code.All(char.IsAsciiDigit))
             return Invalid("code", "Use the numeric OTP sent by LINE.");
 
-        return jobs.SubmitOtp(Owner(context), id, code) switch
+        return (await jobs.SubmitOtpAsync(Owner(context), id, code, ct)) switch
         {
             StoreOutcome.Applied => Accepted(id),
             StoreOutcome.NotFound => Results.NotFound(new ApiError("jobNotFound")),
@@ -93,18 +93,18 @@ internal static class JobEndpoints
         };
     }
 
-    private static IResult Get(Guid id, JobStore jobs, HttpContext context) =>
-        jobs.Get(Owner(context), id) is { } job ? Results.Ok(job) : Results.NotFound(new ApiError("jobNotFound"));
+    private static async Task<IResult> Get(Guid id, JobStore jobs, HttpContext context, CancellationToken ct) =>
+        await jobs.GetAsync(Owner(context), id, ct) is { } job ? Results.Ok(job) : Results.NotFound(new ApiError("jobNotFound"));
 
-    private static IResult List(int? limit, JobStore jobs, HttpContext context)
+    private static async Task<IResult> List(int? limit, JobStore jobs, HttpContext context, CancellationToken ct)
     {
         if (limit is < 1 or > 100)
             return Invalid("limit", "Use a limit from 1 to 100.");
-        return Results.Ok(jobs.List(Owner(context), limit ?? 25));
+        return Results.Ok(await jobs.ListAsync(Owner(context), limit ?? 25, ct));
     }
 
-    private static IResult Enqueue<T>(HttpContext context, JobStore jobs, SecretStore secrets,
-        JobKind kind, string resource, T work, string stage)
+    private static async Task<IResult> Enqueue<T>(HttpContext context, JobStore jobs, SecretStore secrets,
+        JobKind kind, string resource, T work, string stage, CancellationToken ct)
     {
         string? key = null;
         if (context.Request.Headers.TryGetValue("Idempotency-Key", out var values))
@@ -116,8 +116,8 @@ internal static class JobEndpoints
         }
 
         var id = Guid.NewGuid();
-        var result = jobs.Enqueue(new EnqueueRequest(id, Owner(context), kind, resource, jobs.Seal(id, work),
-            stage, key, secrets.Fingerprint($"request:{kind}", work)));
+        var result = await jobs.EnqueueAsync(new EnqueueRequest(id, Owner(context), kind, resource, jobs.Seal(id, work),
+            stage, key, secrets.Fingerprint($"request:{kind}", work)), ct);
         return result.Outcome switch
         {
             StoreOutcome.Applied => Accepted(result.Id),

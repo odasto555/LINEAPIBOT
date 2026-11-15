@@ -1,86 +1,111 @@
 using LineJobs.Configuration;
-using Microsoft.Data.Sqlite;
+using LineJobs.Jobs;
+using MongoDB.Bson;
+using MongoDB.Driver;
 
 namespace LineJobs.Storage;
 
 internal sealed class Database : IDisposable
 {
-    private readonly FileStream _processLock;
-    private readonly string _connectionString;
+    private static readonly FilterDefinition<QueueControl> Queue = Builders<QueueControl>.Filter.Eq(x => x.Id, "admission");
+    private static readonly TransactionOptions Transaction = new(
+        readConcern: ReadConcern.Snapshot, readPreference: ReadPreference.Primary, writeConcern: WriteConcern.WMajority);
+
+    private readonly MongoClient _client;
+    private readonly IMongoDatabase _db;
+    private readonly IMongoCollection<QueueControl> _queueControl;
 
     public Database(ApiSettings settings)
     {
-        var path = settings.DatabasePath;
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        _processLock = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        try
-        {
-            _connectionString = new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 10 }.ToString();
-            using var db = Open();
-            using var cmd = db.CreateCommand();
-            cmd.CommandText = """
-                PRAGMA journal_mode = WAL;
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id TEXT PRIMARY KEY, owner TEXT NOT NULL, secret TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL, resource_key TEXT NOT NULL,
-                    state TEXT NOT NULL, stage TEXT NOT NULL, payload TEXT, created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL, otp_expires_at INTEGER, result TEXT, error TEXT,
-                    request_id TEXT, fingerprint TEXT NOT NULL
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_resource ON jobs(resource_key)
-                    WHERE state IN ('Queued','Running','AwaitingOtp');
-                CREATE UNIQUE INDEX IF NOT EXISTS jobs_request_id ON jobs(owner,request_id) WHERE request_id IS NOT NULL;
-                CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(state, updated_at);
-                CREATE INDEX IF NOT EXISTS jobs_owner ON jobs(owner, created_at DESC);
-                """;
-            cmd.ExecuteNonQuery();
-
-            using var recovery = db.Sql("""
-                UPDATE jobs SET state = 'Interrupted', updated_at = $now, payload = NULL,
-                    otp_expires_at = NULL, error = '{"code":"serverInterrupted"}'
-                WHERE state = 'Running';
-                """, null, ("$now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
-            recovery.ExecuteNonQuery();
-        }
-        catch
-        {
-            _processLock.Dispose();
-            throw;
-        }
+        var clientSettings = ReadClientSettings(settings.MongoConnectionString);
+        clientSettings.ApplicationName = "LineJobs";
+        clientSettings.ServerSelectionTimeout = TimeSpan.FromSeconds(5);
+        clientSettings.ConnectTimeout = TimeSpan.FromSeconds(5);
+        _client = new MongoClient(clientSettings);
+        _db = _client.GetDatabase(settings.MongoDatabaseName).WithWriteConcern(WriteConcern.WMajority);
+        Jobs = _db.GetCollection<JobDocument>("jobs");
+        Accounts = _db.GetCollection<AccountDocument>("accounts");
+        _queueControl = _db.GetCollection<QueueControl>("queue_control");
     }
 
-    internal SqliteConnection Open()
+    internal IMongoCollection<JobDocument> Jobs { get; }
+    internal IMongoCollection<AccountDocument> Accounts { get; }
+
+    internal async Task InitializeAsync(CancellationToken ct)
     {
-        var db = new SqliteConnection(_connectionString);
+        var keys = Builders<JobDocument>.IndexKeys;
+        var filters = Builders<JobDocument>.Filter;
+        await Jobs.Indexes.CreateManyAsync(
+        [
+            new(keys.Ascending(x => x.ResourceKey), new CreateIndexOptions<JobDocument>
+            {
+                Name = "jobs_active_resource",
+                Unique = true,
+                PartialFilterExpression = filters.Eq(x => x.Active, true)
+            }),
+            new(keys.Ascending(x => x.Owner).Ascending(x => x.RequestId), new CreateIndexOptions<JobDocument>
+            {
+                Name = "jobs_request_id",
+                Unique = true,
+                PartialFilterExpression = filters.Exists(x => x.RequestId)
+            }),
+            new(keys.Ascending(x => x.State).Ascending(x => x.UpdatedAt).Ascending(x => x.Id)),
+            new(keys.Ascending(x => x.State).Ascending(x => x.OtpExpiresAt)),
+            new(keys.Ascending(x => x.State).Ascending(x => x.LeaseUntil)),
+            new(keys.Ascending(x => x.Owner).Descending(x => x.CreatedAt).Descending(x => x.Id)),
+            new(keys.Ascending(x => x.Active).Ascending(x => x.Owner))
+        ], cancellationToken: ct);
+        await Accounts.Indexes.CreateOneAsync(new CreateIndexModel<AccountDocument>(
+            Builders<AccountDocument>.IndexKeys.Ascending(x => x.Owner).Ascending(x => x.Id)), cancellationToken: ct);
+        await _queueControl.UpdateOneAsync(Queue, Builders<QueueControl>.Update.SetOnInsert(x => x.Version, 0L),
+            new UpdateOptions { IsUpsert = true }, ct);
+    }
+
+    internal async Task<T> WithAdmissionLockAsync<T>(Func<IClientSessionHandle, CancellationToken, Task<T>> action, CancellationToken ct)
+    {
+        using var session = await _client.StartSessionAsync(cancellationToken: ct);
+        return await session.WithTransactionAsync(async (transaction, transactionToken) =>
+        {
+            await _queueControl.UpdateOneAsync(transaction, Queue,
+                Builders<QueueControl>.Update.Inc(x => x.Version, 1L), cancellationToken: transactionToken);
+            return await action(transaction, transactionToken);
+        }, Transaction, ct);
+    }
+
+    internal Task PingAsync(CancellationToken ct) =>
+        _db.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1), cancellationToken: ct);
+
+    private static MongoClientSettings ReadClientSettings(string connectionString)
+    {
         try
         {
-            db.Open();
-            return db;
+            return MongoClientSettings.FromConnectionString(connectionString);
         }
-        catch
+        catch (Exception ex) when (ex is FormatException or ArgumentException or MongoConfigurationException)
         {
-            db.Dispose();
-            throw;
+            throw new InvalidOperationException("MongoDb:ConnectionString is invalid.");
         }
     }
 
-    public void Dispose() => _processLock.Dispose();
+    public void Dispose() => _client.Dispose();
 }
 
-internal static class DatabaseCommands
+internal sealed class DatabaseStartup(Database database) : IHostedService
 {
-    internal static SqliteCommand Sql(this SqliteConnection db, string sql, SqliteTransaction? transaction,
-        params (string Name, object? Value)[] parameters)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        var cmd = db.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Transaction = transaction;
-        foreach (var (name, value) in parameters)
-            cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
-        return cmd;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            await database.InitializeAsync(deadline.Token);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested &&
+            ex is MongoException or TimeoutException or OperationCanceledException)
+        {
+            throw new InvalidOperationException("MongoDB initialization failed. Check connection, database access and indexes.");
+        }
     }
 
-    internal static string? Text(this SqliteDataReader row, int index) => row.IsDBNull(index) ? null : row.GetString(index);
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

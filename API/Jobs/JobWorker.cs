@@ -2,12 +2,12 @@ using LINEAPI;
 using LINEAPI.Registration;
 using LineJobs.Configuration;
 using LineJobs.Storage;
-using Microsoft.Data.Sqlite;
+using MongoDB.Driver;
 
 namespace LineJobs.Jobs;
 
 internal sealed class JobWorker(
-    JobStore jobs, AccountStore accounts, ApiSettings settings, LineApiClient line, IHostApplicationLifetime lifetime, ILogger<JobWorker> logger)
+    JobStore jobs, AccountStore accounts, ApiSettings settings, LineApiClient line, ILogger<JobWorker> logger)
     : BackgroundService
 {
     protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
@@ -21,43 +21,87 @@ internal sealed class JobWorker(
             ClaimedJob? job;
             try
             {
-                job = jobs.Claim();
+                job = await jobs.ClaimAsync(ct);
             }
-            catch (SqliteException ex)
+            catch (Exception ex) when (ex is MongoException or TimeoutException)
             {
-                logger.LogWarning("Queue read failed with SQLite code {Code}.", ex.SqliteErrorCode);
+                logger.LogWarning("Queue read failed ({ExceptionType}).", ex.GetType().Name);
                 await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 continue;
             }
 
             if (job is null)
             {
-                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
                 continue;
             }
 
-            try
+            await RunClaimedJobAsync(job, ct);
+        }
+    }
+
+    private async Task RunClaimedJobAsync(ClaimedJob job, CancellationToken stoppingToken)
+    {
+        using var execution = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var heartbeat = MaintainLeaseAsync(job, execution);
+        try
+        {
+            await ExecuteJobAsync(job, execution.Token);
+        }
+        catch (JobLeaseLostException)
+        {
+            logger.LogWarning("Worker lease was lost for job {JobId}.", job.Id);
+        }
+        catch (JobRejectedException ex)
+        {
+            await FailAsync(job, new JobError(ex.Code));
+        }
+        catch (LineApiException ex)
+        {
+            await FailAsync(job, new JobError($"line{ex.Failure}", ex.Operation, (int?)ex.HttpStatus, ex.RpcCode));
+        }
+        catch (OperationCanceledException) when (execution.IsCancellationRequested)
+        {
+            await FailAsync(job, new JobError("serverInterrupted"), JobState.Interrupted);
+        }
+        catch (Exception ex) when (ex is MongoException or TimeoutException)
+        {
+            logger.LogError("Could not persist job {JobId} ({ExceptionType}).", job.Id, ex.GetType().Name);
+            await FailAsync(job, new JobError("serverInterrupted"), JobState.Interrupted);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError("Job {JobId} failed ({ExceptionType}).", job.Id, ex.GetType().Name);
+            await FailAsync(job, new JobError("jobFailed"));
+        }
+        finally
+        {
+            await execution.CancelAsync();
+            await heartbeat;
+        }
+    }
+
+    private async Task MaintainLeaseAsync(ClaimedJob job, CancellationTokenSource execution)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(execution.Token))
             {
-                await ExecuteJobAsync(job, ct);
-            }
-            catch (JobRejectedException ex)
-            {
-                Fail(job.Id, new JobError(ex.Code));
-            }
-            catch (LineApiException ex)
-            {
-                Fail(job.Id, new JobError($"line{ex.Failure}", ex.Operation, (int?)ex.HttpStatus, ex.RpcCode));
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                Fail(job.Id, new JobError("serverInterrupted"), JobState.Interrupted);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(execution.Token);
+                deadline.CancelAfter(TimeSpan.FromSeconds(8));
+                if (await jobs.RenewAsync(job, deadline.Token))
+                    continue;
+
+                await execution.CancelAsync();
                 return;
             }
-            catch (Exception ex)
-            {
-                logger.LogError("Job {JobId} failed with {ExceptionType}.", job.Id, ex.GetType().Name);
-                Fail(job.Id, new JobError("jobFailed"));
-            }
+        }
+        catch (OperationCanceledException) when (execution.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is MongoException or TimeoutException or OperationCanceledException)
+        {
+            logger.LogWarning("Could not renew the worker lease for {JobId} ({ExceptionType}).", job.Id, ex.GetType().Name);
+            await execution.CancelAsync();
         }
     }
 
@@ -70,16 +114,16 @@ internal sealed class JobWorker(
                 break;
             case JobKind.AddFriends:
                 var contacts = jobs.Read<AddFriendsWork>(job);
-                var friendContext = settings.ForAccount(accounts.Get(job.Owner, contacts.AccountId).AccessToken);
+                var friendContext = settings.ForAccount((await accounts.GetAsync(job.Owner, contacts.AccountId, ct)).AccessToken);
                 var ids = await line.Friends.SyncContactsAsync(
                     friendContext, contacts.PhoneNumbers, contacts.Revision, contacts.SequenceId, ct);
-                jobs.Complete(job.Id, new JobResult(AccountId: contacts.AccountId, FriendIds: ids));
+                await jobs.CompleteAsync(job, new JobResult(AccountId: contacts.AccountId, FriendIds: ids), null, ct);
                 break;
             case JobKind.CreateGroup:
                 var group = jobs.Read<CreateGroupWork>(job);
-                var groupContext = settings.ForAccount(accounts.Get(job.Owner, group.AccountId).AccessToken);
+                var groupContext = settings.ForAccount((await accounts.GetAsync(job.Owner, group.AccountId, ct)).AccessToken);
                 var created = await line.Groups.CreateAsync(groupContext, group.Name, group.UserIds, group.Revision, ct);
-                jobs.Complete(job.Id, new JobResult(AccountId: group.AccountId, GroupId: created.GroupId));
+                await jobs.CompleteAsync(job, new JobResult(AccountId: group.AccountId, GroupId: created.GroupId), null, ct);
                 break;
             default:
                 throw new InvalidOperationException("Unknown job kind.");
@@ -92,9 +136,9 @@ internal sealed class JobWorker(
         var context = settings.AnonymousContext;
         if (work.SessionId is null)
         {
-            jobs.SetStage(job.Id, "openSession");
+            await jobs.SetStageAsync(job, "openSession", ct);
             var session = await line.Registration.OpenSessionAsync(context, ct);
-            jobs.SetStage(job.Id, "checkRegistrationMethod");
+            await jobs.SetStageAsync(job, "checkRegistrationMethod", ct);
             await line.Registration.GetCountryInfoAsync(context, session, cancellationToken: ct);
             var allowed = await line.Registration.GetAllowedMethodAsync(context, session, work.CountryCode, ct);
             if (allowed != RegistrationMethod.Phone)
@@ -105,10 +149,10 @@ internal sealed class JobWorker(
             if (!verification.AvailableMethods.Contains(PhoneVerificationMethod.Sms))
                 throw new JobRejectedException("smsUnavailable");
 
-            jobs.SetStage(job.Id, "requestOtp");
+            await jobs.SetStageAsync(job, "requestOtp", ct);
             await line.Registration.RequestCodeAsync(
                 context, session, verification.FormattedNumber, work.CountryCode, PhoneVerificationMethod.Sms, ct);
-            jobs.AwaitOtp(job.Id, work with { SessionId = session, PhoneNumber = verification.FormattedNumber });
+            await jobs.AwaitOtpAsync(job, work with { SessionId = session, PhoneNumber = verification.FormattedNumber }, ct);
             return;
         }
 
@@ -122,17 +166,17 @@ internal sealed class JobWorker(
         if (verified.AccountExists is not false || verified.AllowedToRegister is false)
             throw new JobRejectedException("registrationNotAllowed");
 
-        jobs.SetStage(job.Id, "validateProfile");
+        await jobs.SetStageAsync(job, "validateProfile", ct);
         await line.Registration.ValidateProfileAsync(context, work.SessionId, work.DisplayName, ct);
-        jobs.SetStage(job.Id, "setPassword");
+        await jobs.SetStageAsync(job, "setPassword", ct);
         await line.Registration.SetPasswordAsync(context, work.SessionId, work.Password, ct);
-        jobs.SetStage(job.Id, "registerAccount");
+        await jobs.SetStageAsync(job, "registerAccount", ct);
         var registered = await line.Registration.RegisterAsync(context, work.SessionId, ct);
         if (!RequestValidation.TryUserId(registered.UserId, out var accountId))
             throw new JobRejectedException("invalidUpstreamAccount");
 
         var account = accounts.Protect(accountId, job.Owner, new AccountSecret(registered.AccessToken, registered.RefreshToken));
-        jobs.Complete(job.Id, new JobResult(AccountId: accountId), account);
+        await jobs.CompleteAsync(job, new JobResult(AccountId: accountId), account, ct);
     }
 
     private async Task ExpireJobsAsync(CancellationToken ct)
@@ -142,26 +186,26 @@ internal sealed class JobWorker(
         {
             try
             {
-                jobs.Expire();
+                await jobs.ExpireAsync(ct);
             }
-            catch (SqliteException ex)
+            catch (Exception ex) when (ex is MongoException or TimeoutException)
             {
-                logger.LogWarning("Queue expiration failed with SQLite code {Code}.", ex.SqliteErrorCode);
+                logger.LogWarning("Queue expiration failed ({ExceptionType}).", ex.GetType().Name);
             }
         }
         while (await timer.WaitForNextTickAsync(ct));
     }
 
-    private void Fail(Guid id, JobError error, JobState state = JobState.Failed)
+    private async Task FailAsync(ClaimedJob job, JobError error, JobState state = JobState.Failed)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         try
         {
-            jobs.Fail(id, error, state);
+            await jobs.FailAsync(job, error, state, deadline.Token);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is MongoException or TimeoutException or OperationCanceledException)
         {
-            logger.LogCritical("Could not update job {JobId} after {ErrorCode} ({ExceptionType}).", id, error.Code, ex.GetType().Name);
-            lifetime.StopApplication();
+            logger.LogError("Could not record {ErrorCode} for {JobId} ({ExceptionType}).", error.Code, job.Id, ex.GetType().Name);
         }
     }
 }

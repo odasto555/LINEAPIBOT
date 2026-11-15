@@ -1,0 +1,8 @@
+**/.env
+**/.env.*
+**/appsettings.Local.json
+**/*.db
+**/*.db-*
+**/*.db.lock
+**/*.pfx
+**/*.pem
