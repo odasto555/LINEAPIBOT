@@ -58,7 +58,9 @@ internal sealed class Database : IDisposable
             new(keys.Ascending(x => x.State).Ascending(x => x.OtpExpiresAt)),
             new(keys.Ascending(x => x.State).Ascending(x => x.LeaseUntil)),
             new(keys.Ascending(x => x.Owner).Descending(x => x.CreatedAt).Descending(x => x.Id)),
-            new(keys.Ascending(x => x.Active).Ascending(x => x.Owner))
+            new(keys.Ascending(x => x.Active).Ascending(x => x.Owner)),
+            new(keys.Descending(x => x.UpdatedAt).Descending(x => x.Id)),
+            new(keys.Ascending(x => x.Active).Descending(x => x.UpdatedAt).Descending(x => x.Id))
         ], cancellationToken: ct);
         await Accounts.Indexes.CreateOneAsync(new CreateIndexModel<AccountDocument>(
             Builders<AccountDocument>.IndexKeys.Ascending(x => x.Owner).Ascending(x => x.Id)), cancellationToken: ct);

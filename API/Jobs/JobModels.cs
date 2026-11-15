@@ -28,6 +28,9 @@ internal sealed record JobStatus(
     Guid Id, JobKind Kind, JobState State, string Stage, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     DateTimeOffset? OtpExpiresAt, JobResult? Result, JobError? Error);
 
+internal sealed record JobActivity(
+    string Id, string Owner, JobKind Kind, JobState State, string Stage, DateTime CreatedAt, DateTime UpdatedAt, JobError? Error);
+
 internal sealed record ClaimedJob(Guid Id, string Owner, JobKind Kind, string Payload, string LeaseId);
 internal sealed record AccountSecret(
     string AccessToken, string? RefreshToken = null,

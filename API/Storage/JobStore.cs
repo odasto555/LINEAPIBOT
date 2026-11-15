@@ -72,6 +72,17 @@ internal sealed class JobStore(Database database, ApiSettings settings, SecretSt
         return items.Select(x => x.Status()).ToArray();
     }
 
+    internal async Task<IReadOnlyList<JobActivity>> MonitorAsync(bool? active, int limit, CancellationToken ct)
+    {
+        var filter = active is { } value ? Filter.Eq(x => x.Active, value) : Filter.Empty;
+        var jobs = await database.Jobs.Find(filter).SortByDescending(x => x.UpdatedAt)
+            .ThenByDescending(x => x.Id).Limit(limit)
+            .Project(x => new { x.Id, x.Owner, x.Kind, x.State, x.Stage, x.CreatedAt, x.UpdatedAt, x.Error })
+            .ToListAsync(ct);
+        return jobs.Select(x => new JobActivity(x.Id, x.Owner, x.Kind, x.State, x.Stage,
+            x.CreatedAt, x.UpdatedAt, JobDocument.DecodeError(x.Error))).ToArray();
+    }
+
     internal async Task<ClaimedJob?> ClaimAsync(CancellationToken ct)
     {
         var now = DateTime.UtcNow;

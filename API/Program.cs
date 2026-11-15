@@ -70,8 +70,12 @@ public static class Program
         app.Use(async (context, next) =>
         {
             context.Response.Headers.CacheControl = "no-store";
+            context.Response.Headers.XContentTypeOptions = "nosniff";
+            context.Response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
             await next(context);
         });
+        app.UseDefaultFiles();
+        app.UseStaticFiles();
         app.UseRouting();
         app.UseAuthentication();
         app.UseAuthorization();
@@ -83,6 +87,8 @@ public static class Program
         api.MapAuth();
         api.MapAccounts();
         api.MapJobs();
+        api.MapMonitor();
+        app.MapFallbackToFile("/monitor", "index.html");
         return app;
     }
 

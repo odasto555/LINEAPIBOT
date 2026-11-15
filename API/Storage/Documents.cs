@@ -35,7 +35,10 @@ internal sealed class JobDocument
         Guid.Parse(Id), Kind, State, Stage, new DateTimeOffset(CreatedAt), new DateTimeOffset(UpdatedAt),
         OtpExpiresAt is { } expires ? new DateTimeOffset(expires) : null,
         Result is null ? null : JsonSerializer.Deserialize<JobResult>(Result, Json),
-        Error is null ? null : JsonSerializer.Deserialize<JobError>(Error, Json));
+        DecodeError(Error));
+
+    internal static JobError? DecodeError(string? error) =>
+        error is null ? null : JsonSerializer.Deserialize<JobError>(error, Json);
 
     internal static string Encode<T>(T value) => JsonSerializer.Serialize(value, Json);
 }
