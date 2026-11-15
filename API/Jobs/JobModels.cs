@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using LineJobs.Configuration;
+
 namespace LineJobs.Jobs;
 
 internal enum JobKind
@@ -26,11 +29,14 @@ internal sealed record JobStatus(
     DateTimeOffset? OtpExpiresAt, JobResult? Result, JobError? Error);
 
 internal sealed record ClaimedJob(Guid Id, string Owner, JobKind Kind, string Payload, string LeaseId);
-internal sealed record AccountSecret(string AccessToken, string? RefreshToken = null);
-internal sealed record AccountWrite(string Id, string Owner, string EncryptedSecret);
+internal sealed record AccountSecret(
+    string AccessToken, string? RefreshToken = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LineClientProfile? Profile = null);
+internal sealed record AccountWrite(string Id, string Owner, AccountSecret Secret);
 internal sealed record RegistrationWork(
     string PhoneNumber, string CountryCode, string DisplayName, string Password,
-    string DeviceId, string DeviceModel, string? SessionId = null, string? Otp = null);
+    string DeviceId, string DeviceModel, string? SessionId = null, string? Otp = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LineClientProfile? Profile = null);
 
 internal sealed record AddFriendsWork(string AccountId, string[] PhoneNumbers, int Revision, int SequenceId);
 internal sealed record CreateGroupWork(string AccountId, string Name, string[] UserIds, int Revision);

@@ -32,7 +32,7 @@ internal static class AccountEndpoints
             if (!RequestValidation.TryUserId(profile.UserId, out var id))
                 return Results.Problem(statusCode: StatusCodes.Status502BadGateway, title: "Invalid LINE account response.");
 
-            var account = accounts.Protect(id, JobEndpoints.Owner(context), new AccountSecret(token));
+            var account = new AccountWrite(id, JobEndpoints.Owner(context), new AccountSecret(token));
             return await accounts.LinkAsync(account, ct) == StoreOutcome.Applied
                 ? Results.Ok(new AccountResponse(id))
                 : Results.Conflict(new ApiError("accountUnavailable"));

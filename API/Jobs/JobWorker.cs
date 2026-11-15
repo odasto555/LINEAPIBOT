@@ -114,14 +114,16 @@ internal sealed class JobWorker(
                 break;
             case JobKind.AddFriends:
                 var contacts = jobs.Read<AddFriendsWork>(job);
-                var friendContext = settings.ForAccount((await accounts.GetAsync(job.Owner, contacts.AccountId, ct)).AccessToken);
+                var friendAccount = await accounts.GetAsync(job.Owner, contacts.AccountId, ct);
+                var friendContext = settings.ForAccount(friendAccount.AccessToken, friendAccount.Profile);
                 var ids = await line.Friends.SyncContactsAsync(
                     friendContext, contacts.PhoneNumbers, contacts.Revision, contacts.SequenceId, ct);
                 await jobs.CompleteAsync(job, new JobResult(AccountId: contacts.AccountId, FriendIds: ids), null, ct);
                 break;
             case JobKind.CreateGroup:
                 var group = jobs.Read<CreateGroupWork>(job);
-                var groupContext = settings.ForAccount((await accounts.GetAsync(job.Owner, group.AccountId, ct)).AccessToken);
+                var groupAccount = await accounts.GetAsync(job.Owner, group.AccountId, ct);
+                var groupContext = settings.ForAccount(groupAccount.AccessToken, groupAccount.Profile);
                 var created = await line.Groups.CreateAsync(groupContext, group.Name, group.UserIds, group.Revision, ct);
                 await jobs.CompleteAsync(job, new JobResult(AccountId: group.AccountId, GroupId: created.GroupId), null, ct);
                 break;
@@ -133,10 +135,12 @@ internal sealed class JobWorker(
     private async Task RegisterAsync(ClaimedJob job, CancellationToken ct)
     {
         var work = jobs.Read<RegistrationWork>(job);
-        var context = settings.AnonymousContext;
+        var profile = work.Profile ?? (work.SessionId is null ? AndroidRandomizer.Sample(settings.LineVersion) : settings.FallbackProfile);
+        var context = settings.LineContext(profile);
         if (work.SessionId is null)
         {
-            await jobs.SetStageAsync(job, "openSession", ct);
+            work = work with { Profile = profile };
+            await jobs.StartRegistrationAsync(job, work, ct);
             var session = await line.Registration.OpenSessionAsync(context, ct);
             await jobs.SetStageAsync(job, "checkRegistrationMethod", ct);
             await line.Registration.GetCountryInfoAsync(context, session, cancellationToken: ct);
@@ -175,7 +179,7 @@ internal sealed class JobWorker(
         if (!RequestValidation.TryUserId(registered.UserId, out var accountId))
             throw new JobRejectedException("invalidUpstreamAccount");
 
-        var account = accounts.Protect(accountId, job.Owner, new AccountSecret(registered.AccessToken, registered.RefreshToken));
+        var account = new AccountWrite(accountId, job.Owner, new AccountSecret(registered.AccessToken, registered.RefreshToken, profile));
         await jobs.CompleteAsync(job, new JobResult(AccountId: accountId), account, ct);
     }
 

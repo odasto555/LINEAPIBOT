@@ -27,23 +27,24 @@ internal sealed class AccountStore(Database database, SecretStore secrets)
             var resource = Resource(account.Id);
             if (await database.Jobs.Find(session, job => job.Active && job.ResourceKey == resource).AnyAsync(token))
                 return StoreOutcome.DuplicateAccount;
-            return await SaveAsync(database.Accounts, session, account, token) ? StoreOutcome.Applied : StoreOutcome.DuplicateAccount;
+            return await SaveAsync(session, account, token) ? StoreOutcome.Applied : StoreOutcome.DuplicateAccount;
         }, ct);
-
-    internal AccountWrite Protect(string id, string owner, AccountSecret secret) =>
-        new(id, owner, secrets.Seal(Scope(id, owner), secret));
 
     internal static string Resource(string id) => $"account:{id}";
 
-    internal static async Task<bool> SaveAsync(
-        IMongoCollection<AccountDocument> accounts, IClientSessionHandle session, AccountWrite account, CancellationToken ct)
+    internal async Task<bool> SaveAsync(IClientSessionHandle session, AccountWrite account, CancellationToken ct)
     {
-        var existing = await accounts.Find(session, a => a.Id == account.Id).FirstOrDefaultAsync(ct);
+        var existing = await database.Accounts.Find(session, a => a.Id == account.Id).FirstOrDefaultAsync(ct);
         if (existing is not null && !string.Equals(existing.Owner, account.Owner, StringComparison.Ordinal))
             return false;
 
-        await accounts.ReplaceOneAsync(session, a => a.Id == account.Id,
-            new AccountDocument(account.Id, account.Owner, account.EncryptedSecret), new ReplaceOptions { IsUpsert = true }, ct);
+        var scope = Scope(account.Id, account.Owner);
+        var secret = account.Secret;
+        if (secret.Profile is null && existing is not null)
+            secret = secret with { Profile = secrets.Open<AccountSecret>(scope, existing.Secret).Profile };
+
+        await database.Accounts.ReplaceOneAsync(session, a => a.Id == account.Id,
+            new AccountDocument(account.Id, account.Owner, secrets.Seal(scope, secret)), new ReplaceOptions { IsUpsert = true }, ct);
         return true;
     }
 

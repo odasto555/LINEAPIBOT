@@ -17,8 +17,9 @@ ASP.NET Core .NET 10, MongoDB Atlas และไลบรารี `../LINEAPI/L
 | `Auth__BootstrapUsername` | ชื่อแอดมินคนแรก ใช้ตัวอักษรอังกฤษ ตัวเลข `_` หรือ `-` รวม 1–64 ตัว |
 | `Auth__BootstrapPassword` | รหัสผ่านแอดมินคนแรก 12–128 ตัวอักษร |
 | `Auth__TokenHours` | อายุโทเคน 1–168 ชั่วโมง ค่าเริ่มต้น 12 ชั่วโมง |
-| `Line__UserAgent` | User-Agent สำหรับการเชื่อมต่อ LINE |
-| `Line__Application` | ค่า X-Line-Application รองรับ `\t` แทน Tab |
+| `Line__Version` | เวอร์ชัน LINE ที่เซิร์ฟเวอร์อ่านตอนเริ่มรัน ค่าเริ่มต้น `26.7.1` |
+| `Line__UserAgent` | ระบุได้ถ้าต้องการทับค่า `User-Agent` สำรองสำหรับบัญชีที่ยังไม่มีโปรไฟล์และงานสมัครเดิมที่รอ OTP |
+| `Line__Application` | ระบุได้ถ้าต้องการทับค่า `X-Line-Application` สำรอง รองรับ `\t` แทน Tab |
 | `Line__BaseUrl` | HTTPS origin ของ LINE ใช้ค่าที่กำหนดใน `appsettings.json` ได้ |
 | `Line__Locale` | ค่าเริ่มต้น `th_TH` |
 
@@ -57,6 +58,10 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 | POST | `/v1/jobs/{jobId}/otp` | `{"code":"012345"}` ใช้ string เพื่อรักษาเลขศูนย์ด้านหน้า |
 | POST | `/v1/accounts` | `{"accessToken":"…"}` ผูกบัญชีเดิม โดยอ่าน Account ID จาก LINE |
 | GET | `/v1/accounts` | รายการ Account ID ที่ผู้ใช้สั่งงานได้ |
+
+สำหรับงานสมัครใหม่ เซิร์ฟเวอร์ใช้ `Line__Version` และสุ่มเวอร์ชัน Android จาก `AndroidRandomizer` ชุด `User-Agent` กับ `X-Line-Application` ที่บันทึกในงานจะใช้ต่อจนสมัครเสร็จ รวมถึงหลังรีสตาร์ตระหว่างรอ OTP เมื่อสมัครสำเร็จ ชุดนี้จะบันทึกกับบัญชีแบบเข้ารหัส
+
+เมื่อตั้ง `Line__Version` ใหม่แล้วรีสตาร์ต งานสมัครใหม่และคำขอผูกบัญชี เพิ่มเพื่อน และสร้างกลุ่มที่ใช้ header รูปแบบ Android จะใช้เลขเวอร์ชัน LINE จากการตั้งค่าใหม่ ส่วนเวอร์ชัน Android ใช้ค่าที่บันทึกไว้กับบัญชี หรือ Android 14 ถ้าบัญชียังไม่มีข้อมูลและใช้ค่าสำรองเริ่มต้น
 
 คำขอสร้างงานตอบ `202` พร้อม `jobId` และ `statusUrl` ระบบรองรับ `Idempotency-Key` สำหรับส่งคำขอเดิมซ้ำหลังเครือข่ายขาด
 

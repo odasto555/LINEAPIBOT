@@ -13,7 +13,9 @@ internal sealed class ApiSettings
     internal string? BootstrapPassword { get; init; }
     internal int TokenHours { get; init; }
     internal required Uri LineOrigin { get; init; }
-    internal required LineRequestContext AnonymousContext { get; init; }
+    internal required string LineVersion { get; init; }
+    internal required LineClientProfile FallbackProfile { get; init; }
+    internal required string LineLocale { get; init; }
     internal int Workers { get; init; }
     internal int QueueCapacity { get; init; }
     internal int MaxActivePerUser { get; init; }
@@ -26,6 +28,13 @@ internal sealed class ApiSettings
             throw new InvalidOperationException("Api:StorageKey must decode to 32 bytes.");
 
         var capacity = ReadInt(configuration, "Api:QueueCapacity", 500, 1, 100_000);
+        if (!Version.TryParse(Required(configuration, "Line:Version"), out var version) || version.Build < 0 || version.Revision >= 0)
+            throw new InvalidOperationException("Line:Version must contain three numeric components, such as 26.7.1.");
+
+        var lineVersion = version.ToString(3);
+        var fallback = AndroidRandomizer.Default(lineVersion);
+        var userAgent = configuration["Line:UserAgent"];
+        var application = configuration["Line:Application"];
         return new ApiSettings
         {
             MongoConnectionString = Required(configuration, "MongoDb:ConnectionString"),
@@ -35,10 +44,11 @@ internal sealed class ApiSettings
             BootstrapPassword = configuration["Auth:BootstrapPassword"],
             TokenHours = ReadInt(configuration, "Auth:TokenHours", 12, 1, 168),
             LineOrigin = new Uri(Required(configuration, "Line:BaseUrl"), UriKind.Absolute),
-            AnonymousContext = new LineRequestContext(
-                Required(configuration, "Line:UserAgent"),
-                Required(configuration, "Line:Application").Replace("\\t", "\t", StringComparison.Ordinal),
-                Required(configuration, "Line:Locale")),
+            LineVersion = lineVersion,
+            FallbackProfile = new LineClientProfile(
+                string.IsNullOrWhiteSpace(userAgent) ? fallback.UserAgent : userAgent,
+                string.IsNullOrWhiteSpace(application) ? fallback.Application : application.Replace("\\t", "\t", StringComparison.Ordinal)),
+            LineLocale = Required(configuration, "Line:Locale"),
             Workers = ReadInt(configuration, "Api:Workers", 8, 1, 64),
             QueueCapacity = capacity,
             MaxActivePerUser = ReadInt(configuration, "Api:MaxActivePerUser", Math.Min(capacity, 25), 1, capacity),
@@ -46,8 +56,11 @@ internal sealed class ApiSettings
         };
     }
 
-    internal LineRequestContext ForAccount(string token) => new(
-        AnonymousContext.UserAgent, AnonymousContext.Application, AnonymousContext.Locale, token);
+    internal LineRequestContext LineContext(LineClientProfile profile, string? accessToken = null) =>
+        new(profile.UserAgent, profile.Application, LineLocale, accessToken);
+
+    internal LineRequestContext ForAccount(string accessToken, LineClientProfile? profile = null) =>
+        LineContext(AndroidRandomizer.WithLineVersion(profile ?? FallbackProfile, LineVersion), accessToken);
 
     private static string Required(IConfiguration configuration, string name) =>
         configuration[name] is { Length: > 0 } value ? value : throw new InvalidOperationException($"Configure {name}.");

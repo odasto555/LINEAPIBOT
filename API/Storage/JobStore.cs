@@ -5,7 +5,7 @@ using MongoDB.Driver;
 
 namespace LineJobs.Storage;
 
-internal sealed class JobStore(Database database, ApiSettings settings, SecretStore secrets)
+internal sealed class JobStore(Database database, ApiSettings settings, SecretStore secrets, AccountStore accounts)
 {
     private static readonly FilterDefinitionBuilder<JobDocument> Filter = Builders<JobDocument>.Filter;
     private static readonly UpdateDefinitionBuilder<JobDocument> Update = Builders<JobDocument>.Update;
@@ -103,6 +103,13 @@ internal sealed class JobStore(Database database, ApiSettings settings, SecretSt
         return UpdateOwnedAsync(job, Update.Set(x => x.Stage, stage).Set(x => x.UpdatedAt, now), now, ct);
     }
 
+    internal Task StartRegistrationAsync(ClaimedJob job, RegistrationWork work, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        return UpdateOwnedAsync(job, Update.Set(x => x.Stage, "openSession").Set(x => x.Payload, Seal(job.Id, work))
+            .Set(x => x.UpdatedAt, now), now, ct);
+    }
+
     internal Task AwaitOtpAsync(ClaimedJob job, RegistrationWork work, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
@@ -166,7 +173,7 @@ internal sealed class JobStore(Database database, ApiSettings settings, SecretSt
             if (updated.MatchedCount != 1)
                 throw new JobLeaseLostException();
 
-            if (!await AccountStore.SaveAsync(database.Accounts, session, account, token))
+            if (!await accounts.SaveAsync(session, account, token))
                 throw new JobRejectedException("accountAlreadyLinked");
             return true;
         }, ct);
