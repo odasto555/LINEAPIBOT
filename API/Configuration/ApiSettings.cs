@@ -9,7 +9,9 @@ internal sealed class ApiSettings
     internal required string MongoConnectionString { get; init; }
     internal required string MongoDatabaseName { get; init; }
     internal required byte[] StorageKey { get; init; }
-    internal required IReadOnlyDictionary<string, byte[]> Clients { get; init; }
+    internal string? BootstrapUsername { get; init; }
+    internal string? BootstrapPassword { get; init; }
+    internal int TokenHours { get; init; }
     internal required Uri LineOrigin { get; init; }
     internal required LineRequestContext AnonymousContext { get; init; }
     internal int Workers { get; init; }
@@ -19,23 +21,6 @@ internal sealed class ApiSettings
 
     internal static ApiSettings Read(IConfiguration configuration)
     {
-        var clients = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-        foreach (var client in configuration.GetSection("Api:Clients").GetChildren())
-        {
-            var hash = client.Value;
-            if (client.Key.Length is < 1 or > 64 || !client.Key.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-') ||
-                hash is not { Length: 64 } || !hash.All(Uri.IsHexDigit))
-                throw new InvalidOperationException("Api:Clients must map a client ID to a 64-character SHA-256 hex digest.");
-
-            var bytes = Convert.FromHexString(hash);
-            if (clients.Values.Any(value => value.AsSpan().SequenceEqual(bytes)))
-                throw new InvalidOperationException("Each client must have a separate bearer key.");
-            clients.Add(client.Key, bytes);
-        }
-
-        if (clients.Count == 0)
-            throw new InvalidOperationException("Configure at least one Api:Clients entry.");
-
         var key = Convert.FromBase64String(Required(configuration, "Api:StorageKey"));
         if (key.Length != 32)
             throw new InvalidOperationException("Api:StorageKey must decode to 32 bytes.");
@@ -46,7 +31,9 @@ internal sealed class ApiSettings
             MongoConnectionString = Required(configuration, "MongoDb:ConnectionString"),
             MongoDatabaseName = Required(configuration, "MongoDb:Database"),
             StorageKey = key,
-            Clients = clients,
+            BootstrapUsername = configuration["Auth:BootstrapUsername"],
+            BootstrapPassword = configuration["Auth:BootstrapPassword"],
+            TokenHours = ReadInt(configuration, "Auth:TokenHours", 12, 1, 168),
             LineOrigin = new Uri(Required(configuration, "Line:BaseUrl"), UriKind.Absolute),
             AnonymousContext = new LineRequestContext(
                 Required(configuration, "Line:UserAgent"),

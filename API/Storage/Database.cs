@@ -1,5 +1,6 @@
 using LineJobs.Configuration;
 using LineJobs.Jobs;
+using LineJobs.Security;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
@@ -25,11 +26,15 @@ internal sealed class Database : IDisposable
         _db = _client.GetDatabase(settings.MongoDatabaseName).WithWriteConcern(WriteConcern.WMajority);
         Jobs = _db.GetCollection<JobDocument>("jobs");
         Accounts = _db.GetCollection<AccountDocument>("accounts");
+        Users = _db.GetCollection<UserDocument>("users");
+        Sessions = _db.GetCollection<SessionDocument>("sessions");
         _queueControl = _db.GetCollection<QueueControl>("queue_control");
     }
 
     internal IMongoCollection<JobDocument> Jobs { get; }
     internal IMongoCollection<AccountDocument> Accounts { get; }
+    internal IMongoCollection<UserDocument> Users { get; }
+    internal IMongoCollection<SessionDocument> Sessions { get; }
 
     internal async Task InitializeAsync(CancellationToken ct)
     {
@@ -57,6 +62,12 @@ internal sealed class Database : IDisposable
         ], cancellationToken: ct);
         await Accounts.Indexes.CreateOneAsync(new CreateIndexModel<AccountDocument>(
             Builders<AccountDocument>.IndexKeys.Ascending(x => x.Owner).Ascending(x => x.Id)), cancellationToken: ct);
+        await Users.Indexes.CreateOneAsync(new CreateIndexModel<UserDocument>(
+            Builders<UserDocument>.IndexKeys.Ascending(x => x.NormalizedUsername),
+            new CreateIndexOptions { Name = "users_username_unique", Unique = true }), cancellationToken: ct);
+        await Sessions.Indexes.CreateOneAsync(new CreateIndexModel<SessionDocument>(
+            Builders<SessionDocument>.IndexKeys.Ascending(x => x.ExpiresAt),
+            new CreateIndexOptions { Name = "sessions_expiration", ExpireAfter = TimeSpan.Zero }), cancellationToken: ct);
         await _queueControl.UpdateOneAsync(Queue, Builders<QueueControl>.Update.SetOnInsert(x => x.Version, 0L),
             new UpdateOptions { IsUpsert = true }, ct);
     }
@@ -90,7 +101,7 @@ internal sealed class Database : IDisposable
     public void Dispose() => _client.Dispose();
 }
 
-internal sealed class DatabaseStartup(Database database) : IHostedService
+internal sealed class DatabaseStartup(Database database, UserSessions sessions) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -99,6 +110,7 @@ internal sealed class DatabaseStartup(Database database) : IHostedService
         try
         {
             await database.InitializeAsync(deadline.Token);
+            await sessions.BootstrapAsync(deadline.Token);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested &&
             ex is MongoException or TimeoutException or OperationCanceledException)

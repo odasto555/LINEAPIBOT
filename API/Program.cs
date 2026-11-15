@@ -9,6 +9,7 @@ using LineJobs.Jobs;
 using LineJobs.Security;
 using LineJobs.Storage;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Identity;
 using MongoDB.Driver;
 
 namespace LineJobs;
@@ -34,12 +35,15 @@ public static class Program
             options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
         });
         builder.Services.AddProblemDetails();
-        builder.Services.AddAuthentication(ClientAuthentication.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, ClientAuthentication>(ClientAuthentication.SchemeName, _ => { });
+        builder.Services.AddAuthentication(SessionAuthentication.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, SessionAuthentication>(SessionAuthentication.SchemeName, _ => { });
         builder.Services.AddAuthorization();
         builder.Services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
             options.AddPolicy("client", context => RateLimitPartition.GetFixedWindowLimiter(
                 context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous",
                 _ => new FixedWindowRateLimiterOptions { PermitLimit = 240, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
@@ -47,6 +51,9 @@ public static class Program
 
         builder.Services.AddSingleton(sp => ApiSettings.Read(sp.GetRequiredService<IConfiguration>()));
         builder.Services.AddSingleton<SecretStore>();
+        builder.Services.Configure<PasswordHasherOptions>(options => options.IterationCount = 210_000);
+        builder.Services.AddSingleton<IPasswordHasher<UserDocument>, PasswordHasher<UserDocument>>();
+        builder.Services.AddSingleton<UserSessions>();
         builder.Services.AddSingleton<Database>();
         builder.Services.AddSingleton<AccountStore>();
         builder.Services.AddSingleton<JobStore>();
@@ -71,7 +78,9 @@ public static class Program
         app.UseRateLimiter();
 
         app.MapGet("/healthz", HealthAsync);
+        app.MapLogin();
         var api = app.MapGroup("/v1").RequireAuthorization().RequireRateLimiting("client");
+        api.MapAuth();
         api.MapAccounts();
         api.MapJobs();
         return app;

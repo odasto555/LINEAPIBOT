@@ -14,11 +14,15 @@ ASP.NET Core .NET 10, MongoDB Atlas และไลบรารี `../LINEAPI/L
 | `MongoDb__ConnectionString` | Connection string สำหรับ database user จาก Atlas โดยทั่วไปขึ้นต้นด้วย `mongodb+srv://` |
 | `MongoDb__Database` | ชื่อฐานข้อมูล ค่าเริ่มต้น `linejobs` |
 | `Api__StorageKey` | ค่าสุ่ม 32 ไบต์ในรูป Base64 สำหรับเข้ารหัส payload และโทเคน เก็บค่าเดิมตลอดการ deploy |
-| `Api__Clients__<clientId>` | SHA-256 แบบ hex 64 ตัวอักษรของ Bearer key ของผู้ใช้รายนั้น |
+| `Auth__BootstrapUsername` | ชื่อแอดมินคนแรก ใช้ตัวอักษรอังกฤษ ตัวเลข `_` หรือ `-` รวม 1–64 ตัว |
+| `Auth__BootstrapPassword` | รหัสผ่านแอดมินคนแรก 12–128 ตัวอักษร |
+| `Auth__TokenHours` | อายุโทเคน 1–168 ชั่วโมง ค่าเริ่มต้น 12 ชั่วโมง |
 | `Line__UserAgent` | User-Agent สำหรับการเชื่อมต่อ LINE |
 | `Line__Application` | ค่า X-Line-Application รองรับ `\t` แทน Tab |
 | `Line__BaseUrl` | HTTPS origin ของ LINE ใช้ค่าที่กำหนดใน `appsettings.json` ได้ |
 | `Line__Locale` | ค่าเริ่มต้น `th_TH` |
+
+API ใช้ค่า `Auth__BootstrapUsername` และ `Auth__BootstrapPassword` เมื่อฐานข้อมูลยังไม่มีผู้ใช้ เมื่อแอดมินล็อกอินได้แล้ว ให้ลบทั้งสองค่าออกจาก Environment ของ Render บัญชีแอดมินอยู่ใน MongoDB
 
 Render กำหนด `PORT` ให้ ตัว API ฟังที่ `0.0.0.0` และใช้พอร์ตนั้น ถ้ารัน Docker โดยไม่มี `PORT` จะใช้ `10000` ค่าที่เป็นความลับให้ตั้งใน Environment ของ Render
 
@@ -32,7 +36,16 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 
 ## เรียก API
 
-ใช้ `Authorization: Bearer <clientKey>` สำหรับทุก route ใต้ `/v1`
+ส่ง `POST /v1/auth/login` พร้อม JSON `username` และ `password` API คืน `accessToken`, `tokenType`, `expiresAt`, `username` และ `role` ใช้ `Authorization: Bearer <accessToken>` กับคำขอที่ต้องยืนยันตัวตน เมื่อตอบ `401` เพราะโทเคนหมดอายุ ให้ล็อกอินใหม่
+
+| Method | Path | JSON / ผลลัพธ์ |
+|---|---|---|
+| POST | `/v1/auth/login` | `{"username":"member1","password":"…"}` คืนโทเคนเมื่อเข้าสู่ระบบสำเร็จ |
+| GET | `/v1/auth/me` | คืนชื่อและสิทธิ์ของผู้ใช้ปัจจุบัน |
+| POST | `/v1/auth/logout` | ยกเลิกโทเคนที่ส่งมาและคืน `204` |
+| POST | `/v1/admin/users` | แอดมินส่ง `{"username":"member1","password":"…"}` เพื่อสร้างผู้ใช้ทั่วไป คืน `201` |
+
+เมื่อย้ายจาก client key รุ่นเดิม ให้สร้างผู้ใช้ด้วยชื่อที่ตรงกับ `clientId` เดิมทุกตัวอักษร รวมถึงตัวพิมพ์เล็กและใหญ่ เพื่อให้ผู้ใช้เห็นบัญชีและงานที่ผูกกับชื่อนั้นอยู่แล้ว จากนั้นลบค่า `Api__Clients__*` ออกจาก Render และให้โปรแกรมเรียกล็อกอินเพื่อรับโทเคน
 
 | Method | Path | JSON / ผลลัพธ์ |
 |---|---|---|
