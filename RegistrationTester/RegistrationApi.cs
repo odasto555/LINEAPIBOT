@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -53,6 +54,13 @@ internal sealed class RegistrationApi(Uri baseAddress) : IDisposable
     internal Task<LineLogEntry[]> LineLogAsync(ConsoleSession session, Guid id, CancellationToken ct) =>
         ReadAsync<LineLogEntry[]>(HttpMethod.Get, $"v1/jobs/{id}/line-log", ct, session.AccessToken);
 
+    internal async Task WriteFullLineLogAsync(ConsoleSession session, Guid id, Stream output, CancellationToken ct)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"v1/jobs/{id}/line-log/full", ct, session.AccessToken,
+            completion: HttpCompletionOption.ResponseHeadersRead);
+        await response.Content.CopyToAsync(output, ct);
+    }
+
     internal Task<AcceptedJob> RegisterAsync(ConsoleSession session, RegistrationRequest request, Guid requestId, CancellationToken ct) =>
         ReadAsync<AcceptedJob>(HttpMethod.Post, "v1/jobs/registration", ct, session.AccessToken, request, requestId);
 
@@ -70,7 +78,7 @@ internal sealed class RegistrationApi(Uri baseAddress) : IDisposable
     }
 
     private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, CancellationToken ct, string? token,
-        object? body = null, Guid? requestId = null)
+        object? body = null, Guid? requestId = null, HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead)
     {
         using var request = new HttpRequestMessage(method, path);
         if (token is not null)
@@ -80,7 +88,7 @@ internal sealed class RegistrationApi(Uri baseAddress) : IDisposable
         if (requestId is { } id)
             request.Headers.Add("Idempotency-Key", id.ToString());
 
-        var response = await _client.SendAsync(request, ct);
+        var response = await _client.SendAsync(request, completion, ct);
         if (response.IsSuccessStatusCode)
             return response;
 
@@ -105,6 +113,7 @@ internal sealed class RegistrationApi(Uri baseAddress) : IDisposable
                     "queueFull" => "คิวเต็ม กรุณาลองอีกครั้ง",
                     "otpExpired" => "OTP หมดอายุแล้ว",
                     "jobNotAwaitingOtp" => "งานนี้ไม่ได้รอ OTP",
+                    "lineCaptureNotFound" => "ยังไม่มี Log เต็มของงานนี้ ให้ส่งงานใหม่หลัง Deploy API ล่าสุด",
                     var code => code ?? "API ตอบกลับข้อผิดพลาด"
                 };
             }

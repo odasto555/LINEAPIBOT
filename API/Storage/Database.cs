@@ -26,6 +26,7 @@ internal sealed class Database : IDisposable
         _db = _client.GetDatabase(settings.MongoDatabaseName).WithWriteConcern(WriteConcern.WMajority);
         Jobs = _db.GetCollection<JobDocument>("jobs");
         LineLogs = _db.GetCollection<LineLogDocument>("job_line_logs");
+        LineCaptures = _db.GetCollection<LineCaptureDocument>("job_line_captures");
         Accounts = _db.GetCollection<AccountDocument>("accounts");
         Users = _db.GetCollection<UserDocument>("users");
         Sessions = _db.GetCollection<SessionDocument>("sessions");
@@ -34,6 +35,7 @@ internal sealed class Database : IDisposable
 
     internal IMongoCollection<JobDocument> Jobs { get; }
     internal IMongoCollection<LineLogDocument> LineLogs { get; }
+    internal IMongoCollection<LineCaptureDocument> LineCaptures { get; }
     internal IMongoCollection<AccountDocument> Accounts { get; }
     internal IMongoCollection<UserDocument> Users { get; }
     internal IMongoCollection<SessionDocument> Sessions { get; }
@@ -64,6 +66,9 @@ internal sealed class Database : IDisposable
             new(keys.Descending(x => x.UpdatedAt).Descending(x => x.Id)),
             new(keys.Ascending(x => x.Active).Descending(x => x.UpdatedAt).Descending(x => x.Id))
         ], cancellationToken: ct);
+        await LineCaptures.Indexes.CreateOneAsync(new CreateIndexModel<LineCaptureDocument>(
+            Builders<LineCaptureDocument>.IndexKeys.Ascending(x => x.Owner).Ascending(x => x.JobId)
+                .Ascending(x => x.Timestamp).Ascending(x => x.Id)), cancellationToken: ct);
         await Accounts.Indexes.CreateOneAsync(new CreateIndexModel<AccountDocument>(
             Builders<AccountDocument>.IndexKeys.Ascending(x => x.Owner).Ascending(x => x.Id)), cancellationToken: ct);
         await Users.Indexes.CreateOneAsync(new CreateIndexModel<UserDocument>(

@@ -146,7 +146,9 @@
                             <TextBlock x:Name="OtpMessage" Style="{StaticResource Hint}" Margin="0,8,0,0"/>
                             <TextBlock x:Name="SyncMessage" Style="{StaticResource Hint}" Margin="0,10,0,0"/>
                             <TextBlock Text="Log การติดต่อ LINE" Style="{StaticResource Heading}" Margin="0,16,0,0"/>
-                            <TextBlock Style="{StaticResource Hint}" Text="** คือไบต์ข้อความหรือข้อมูลไบนารีที่ปิดบังไว้"/>
+                            <Button x:Name="FullLogButton" Content="เปิด Log เต็ม…" Click="OpenFullLineLog"
+                                IsEnabled="False" HorizontalAlignment="Left" Margin="0,4,0,4"/>
+                            <TextBlock x:Name="FullLogMessage" Style="{StaticResource Hint}"/>
                             <TextBox x:Name="LineLogOutput" Height="210" FontFamily="Consolas" FontSize="12"
                                 TextWrapping="Wrap" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto"
                                 Text="เลือกงานเพื่อดู log" Margin="0,5,0,0" IsReadOnly="True"/>

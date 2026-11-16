@@ -46,4 +46,6 @@ internal sealed class JobDocument
 
 internal sealed record AccountDocument([property: BsonId] string Id, string Owner, string Secret);
 internal sealed record LineLogDocument([property: BsonId] string Id, string Owner, LineRpcTrace[] Events);
+internal sealed record LineCaptureDocument(
+    [property: BsonId] ObjectId Id, string JobId, string Owner, DateTime Timestamp, string ProtectedCapture);
 internal sealed record QueueControl([property: BsonId] string Id, long Version);

@@ -16,6 +16,7 @@ internal static class JobEndpoints
         routes.MapPost("/{id:guid}/otp", SubmitOtp);
         routes.MapGet("/{id:guid}", Get);
         routes.MapGet("/{id:guid}/line-log", LineLog);
+        routes.MapGet("/{id:guid}/line-log/full", FullLineLog);
         routes.MapGet("", List);
     }
 
@@ -100,6 +101,15 @@ internal static class JobEndpoints
     private static async Task<IResult> LineLog(Guid id, JobStore jobs, HttpContext context, CancellationToken ct) =>
         await jobs.GetLineLogAsync(Owner(context), id, ct) is { } events
             ? Results.Ok(events) : Results.NotFound(new ApiError("jobNotFound"));
+
+    private static async Task<IResult> FullLineLog(Guid id, JobStore jobs, HttpContext context, CancellationToken ct)
+    {
+        var owner = Owner(context);
+        if (!await jobs.HasLineCaptureAsync(owner, id, ct))
+            return Results.NotFound(new ApiError("lineCaptureNotFound"));
+
+        return Results.Stream(stream => jobs.WriteLineCaptureAsync(owner, id, stream, ct), "text/plain; charset=utf-8");
+    }
 
     private static async Task<IResult> List(int? limit, JobStore jobs, HttpContext context, CancellationToken ct)
     {

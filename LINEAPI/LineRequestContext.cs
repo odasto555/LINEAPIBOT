@@ -3,13 +3,15 @@ namespace LINEAPI;
 public sealed class LineRequestContext
 {
     public LineRequestContext(string userAgent, string application, string locale, string? accessToken = null,
-        Func<LineRpcTrace, CancellationToken, Task>? trace = null)
+        Func<LineRpcTrace, CancellationToken, Task>? trace = null,
+        Func<LineWireCapture, CancellationToken, Task>? capture = null)
     {
         UserAgent = Validate(userAgent, nameof(userAgent), false);
         Application = Validate(application, nameof(application), true);
         Locale = Validate(locale, nameof(locale), false);
         AccessToken = accessToken is null ? null : Validate(accessToken, nameof(accessToken), false);
         Trace = trace;
+        Capture = capture;
     }
 
     public string UserAgent { get; }
@@ -17,6 +19,7 @@ public sealed class LineRequestContext
     public string Locale { get; }
     internal string? AccessToken { get; }
     internal Func<LineRpcTrace, CancellationToken, Task>? Trace { get; }
+    internal Func<LineWireCapture, CancellationToken, Task>? Capture { get; }
 
     internal LineRequestContext RequireAccount()
     {

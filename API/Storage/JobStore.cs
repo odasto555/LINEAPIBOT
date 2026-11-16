@@ -1,7 +1,9 @@
+using System.Text;
 using LINEAPI;
 using LineJobs.Configuration;
 using LineJobs.Jobs;
 using LineJobs.Security;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace LineJobs.Storage;
@@ -11,6 +13,7 @@ internal sealed class JobStore(Database database, ApiSettings settings, SecretSt
     private static readonly FilterDefinitionBuilder<JobDocument> Filter = Builders<JobDocument>.Filter;
     private static readonly UpdateDefinitionBuilder<JobDocument> Update = Builders<JobDocument>.Update;
     private static readonly FilterDefinition<JobDocument> Active = Filter.Eq(x => x.Active, true);
+    private const string ProtectedHexPrefix = "enc:";
 
     internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(2);
 
@@ -71,16 +74,86 @@ internal sealed class JobStore(Database database, ApiSettings settings, SecretSt
         var events = await database.LineLogs.Find(x => x.Id == id.ToString() && x.Owner == owner)
             .Project(x => x.Events).FirstOrDefaultAsync(ct);
         if (events is not null)
-            return events;
+        {
+            var scope = LineLogScope(id, owner);
+            return events.Select(entry => entry.PayloadHex is { } hex && hex.StartsWith(ProtectedHexPrefix, StringComparison.Ordinal)
+                ? entry with { PayloadHex = secrets.Open<string>(scope, hex[ProtectedHexPrefix.Length..]) }
+                : entry).ToArray();
+        }
 
         return await database.Jobs.Find(Owned(owner, id)).Project(x => x.Id).AnyAsync(ct) ? [] : null;
     }
 
-    internal Task AppendLineLogAsync(ClaimedJob job, LineRpcTrace entry, CancellationToken ct) =>
-        database.LineLogs.UpdateOneAsync(x => x.Id == job.Id.ToString() && x.Owner == job.Owner,
+    internal Task AppendLineLogAsync(ClaimedJob job, LineRpcTrace entry, CancellationToken ct)
+    {
+        if (entry.PayloadHex is { } hex)
+            entry = entry with { PayloadHex = ProtectedHexPrefix + secrets.Seal(LineLogScope(job.Id, job.Owner), hex) };
+
+        return database.LineLogs.UpdateOneAsync(x => x.Id == job.Id.ToString() && x.Owner == job.Owner,
             Builders<LineLogDocument>.Update.SetOnInsert(x => x.Owner, job.Owner)
                 .PushEach(x => x.Events, [entry], slice: -48),
             new UpdateOptions { IsUpsert = true }, ct);
+    }
+
+    private static string LineLogScope(Guid id, string owner) => $"line-log:{owner}:{id}";
+
+    internal Task AppendLineCaptureAsync(ClaimedJob job, LineWireCapture capture, CancellationToken ct)
+    {
+        var id = ObjectId.GenerateNewId();
+        var sealedCapture = secrets.Seal(CaptureScope(job.Id, job.Owner, id), capture);
+        return database.LineCaptures.InsertOneAsync(
+            new LineCaptureDocument(id, job.Id.ToString(), job.Owner, capture.Timestamp, sealedCapture), cancellationToken: ct);
+    }
+
+    internal Task<bool> HasLineCaptureAsync(string owner, Guid jobId, CancellationToken ct) =>
+        database.LineCaptures.Find(CaptureFilter(owner, jobId)).Project(x => x.Id).AnyAsync(ct);
+
+    internal async Task WriteLineCaptureAsync(string owner, Guid jobId, Stream stream, CancellationToken ct)
+    {
+        using var cursor = await database.LineCaptures.Find(CaptureFilter(owner, jobId), new FindOptions { BatchSize = 1 })
+            .SortBy(x => x.Timestamp).ThenBy(x => x.Id).ToCursorAsync(ct);
+        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true);
+        await writer.WriteLineAsync($"Job {jobId}".AsMemory(), ct);
+        while (await cursor.MoveNextAsync(ct))
+        {
+            foreach (var row in cursor.Current)
+            {
+                var entry = secrets.Open<LineWireCapture>(CaptureScope(jobId, owner, row.Id), row.ProtectedCapture);
+                await writer.WriteLineAsync($"\n{entry.Timestamp:O} {entry.Direction} {entry.Operation}".AsMemory(), ct);
+                await writer.WriteLineAsync(entry.StartLine.AsMemory(), ct);
+                await writer.WriteLineAsync(entry.Headers.AsMemory(), ct);
+                if (entry.Body is { } body)
+                    await WriteCaptureHexAsync(writer, entry.Direction, body, ct);
+                else
+                    await writer.WriteLineAsync($"HEX {entry.Direction} (no body captured)".AsMemory(), ct);
+            }
+        }
+
+        await writer.FlushAsync(ct);
+    }
+
+    private static async Task WriteCaptureHexAsync(StreamWriter writer, string direction, byte[] body, CancellationToken ct)
+    {
+        await writer.WriteLineAsync($"HEX {direction} ({body.Length} B)".AsMemory(), ct);
+        var line = new StringBuilder(96);
+        for (var offset = 0; offset < body.Length; offset += 32)
+        {
+            line.Clear();
+            var hex = Convert.ToHexString(body.AsSpan(offset, Math.Min(32, body.Length - offset)));
+            for (var i = 0; i < hex.Length; i += 2)
+            {
+                if (i > 0)
+                    line.Append(' ');
+                line.Append(hex, i, 2);
+            }
+            await writer.WriteLineAsync(line.ToString().AsMemory(), ct);
+        }
+    }
+
+    private static FilterDefinition<LineCaptureDocument> CaptureFilter(string owner, Guid id) =>
+        Builders<LineCaptureDocument>.Filter.Where(x => x.Owner == owner && x.JobId == id.ToString());
+
+    private static string CaptureScope(Guid jobId, string owner, ObjectId id) => $"line-wire:{owner}:{jobId}:{id}";
 
     internal async Task<IReadOnlyList<JobStatus>> ListAsync(string owner, int limit, CancellationToken ct)
     {

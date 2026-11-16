@@ -40,8 +40,9 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 - เปิดโปรแกรม Windows `RegistrationTester` เพื่อล็อกอิน ส่งงานสมัครบัญชี ส่ง OTP และดูสถานะงานสมัครของตัวเอง โปรแกรมจะสร้างรหัสผ่าน LINE, Device ID และรุ่นอุปกรณ์ให้ในแต่ละงาน การส่งงานเรียก LINE จริงตามการตั้งค่าของบริการ
 - เปิด `/monitor` ด้วยบัญชีแอดมินเพื่อดูเจ้าของงาน ประเภท สถานะ ขั้นตอนล่าสุด เวลา และรหัสข้อผิดพลาดของงานจากทุกผู้ใช้ เลือกงานล่าสุดหรือเฉพาะงานที่กำลังดำเนินการได้
 - หน้า Monitor อยู่ที่ Web Service เดียวกับ API และรีเฟรชสถานะทุก 4 วินาทีขณะเปิดแท็บอยู่
-- โปรแกรม Windows แสดง Log การติดต่อ LINE แยกตามงาน งานสมัครใหม่จะเห็นชื่อ RPC ขาไป ขากลับ สถานะ HTTP/RPC และวิธี OTP ที่ LINE ตอบกลับ โดยไม่มีข้อมูลลับใน payload
-- `HEX REQ` และ `HEX RES` แสดง 512 ไบต์แรกของข้อความ Thrift Compact ที่อ่านโครงสร้างได้ โดยใช้ `**` แทนค่าข้อความและไบนารี
+- โปรแกรม Windows แสดง Log การติดต่อ LINE แยกตามงาน พร้อมชื่อ RPC ขาไป ขากลับ สถานะ HTTP/RPC และวิธี OTP ที่ LINE ตอบกลับ
+- `HEX REQ` และ `HEX RES` แสดงไบต์จริงสูงสุด 512 ไบต์ต่อข้อความ เจ้าของงานเปิดได้ผ่าน API โดยค่า HEX ถูกเข้ารหัสระหว่างเก็บใน MongoDB และอาจมีข้อมูลลับ เช่น เบอร์โทร OTP และโทเคน
+- ปุ่ม **เปิด Log เต็ม…** บันทึกและเปิดไฟล์ข้อความที่มี HTTP headers และ HEX ของ request/response ทุกไบต์ที่ API อ่านได้สำหรับงานใหม่ ไฟล์นี้อาจมีข้อมูลลับ
 
 รันโปรแกรมทดสอบบน Windows จากรากรีโปด้วย `dotnet run --project RegistrationTester` ค่าเริ่มต้นใช้ `https://lineapibot.onrender.com/` หากใช้ API ทดสอบในเครื่อง ให้ส่ง URL ต่อท้าย เช่น `dotnet run --project RegistrationTester -- http://127.0.0.1:5080/`
 
@@ -66,6 +67,7 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 | POST | `/v1/jobs/create-group` | `accountId`, `name`, `userIds`, `revision` |
 | GET | `/v1/jobs/{jobId}` | สถานะ ขั้นตอน กำหนดส่ง OTP และผลลัพธ์ของงาน |
 | GET | `/v1/jobs/{jobId}/line-log` | Log การติดต่อ LINE ล่าสุดของงานสมัคร ดูได้ด้วยบัญชีเจ้าของงาน |
+| GET | `/v1/jobs/{jobId}/line-log/full` | HTTP headers และ HEX ของ request/response สำหรับเจ้าของงาน ส่งเป็นไฟล์ข้อความ |
 | GET | `/v1/jobs?limit=25` | งานล่าสุดของผู้ใช้ |
 | POST | `/v1/jobs/{jobId}/otp` | `{"code":"012345"}` ใช้ string เพื่อรักษาเลขศูนย์ด้านหน้า |
 | POST | `/v1/accounts` | `{"accessToken":"…"}` ผูกบัญชีเดิม โดยอ่าน Account ID จาก LINE |

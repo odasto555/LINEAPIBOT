@@ -136,7 +136,9 @@ internal sealed class JobWorker(
     {
         var work = jobs.Read<RegistrationWork>(job);
         var profile = work.Profile ?? (work.SessionId is null ? AndroidRandomizer.Sample(settings.LineVersion) : settings.FallbackProfile);
-        var context = settings.LineContext(profile, trace: (entry, token) => LogLineAsync(job, entry, token));
+        var context = settings.LineContext(profile,
+            trace: (entry, token) => LogLineAsync(job, entry, token),
+            capture: (entry, token) => SaveLineDiagnosticAsync(job, deadline => jobs.AppendLineCaptureAsync(job, entry, deadline), token));
         if (work.SessionId is null)
         {
             work = work with { Profile = profile };
@@ -199,11 +201,16 @@ internal sealed class JobWorker(
             job.Id, entry.Phase, entry.Operation, entry.Host, entry.Path, entry.HttpStatus,
             entry.RpcCode, entry.Outcome, entry.ElapsedMilliseconds);
 
+        await SaveLineDiagnosticAsync(job, deadline => jobs.AppendLineLogAsync(job, entry, deadline), ct);
+    }
+
+    private async Task SaveLineDiagnosticAsync(ClaimedJob job, Func<CancellationToken, Task> save, CancellationToken ct)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromMilliseconds(700));
+        deadline.CancelAfter(TimeSpan.FromSeconds(2));
         try
         {
-            await jobs.AppendLineLogAsync(job, entry, deadline.Token);
+            await save(deadline.Token);
         }
         catch (Exception ex) when (ex is MongoException or TimeoutException or OperationCanceledException)
         {

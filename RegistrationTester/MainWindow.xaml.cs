@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -7,6 +8,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using Microsoft.Win32;
 
 namespace RegistrationTester;
 
@@ -36,6 +38,7 @@ public partial class MainWindow : Window
     private bool _submitting;
     private bool _refreshing;
     private bool _updatingPicker;
+    private bool _savingFullLog;
 
     internal MainWindow(RegistrationApi api)
     {
@@ -125,6 +128,7 @@ public partial class MainWindow : Window
         SetJobs([]);
         RenderJob(null);
         LineLogOutput.Text = "เลือกงานเพื่อดู log";
+        FullLogMessage.Text = string.Empty;
 
         LoginPanel.Visibility = session is null ? Visibility.Visible : Visibility.Collapsed;
         Workspace.Visibility = session is null ? Visibility.Collapsed : Visibility.Visible;
@@ -268,6 +272,7 @@ public partial class MainWindow : Window
         OtpMessage.Text = string.Empty;
         RenderJob(null);
         LineLogOutput.Text = "กำลังโหลด log";
+        FullLogMessage.Text = string.Empty;
     }
 
     private async void SubmitOtp(object sender, RoutedEventArgs e)
@@ -390,6 +395,74 @@ public partial class MainWindow : Window
         return $"{summary}{Environment.NewLine}    HEX {direction} ({entry.PayloadBytes} B)  {entry.PayloadHex}";
     }
 
+    private async void OpenFullLineLog(object sender, RoutedEventArgs e)
+    {
+        if (_session is not { } session || _selectedJob is not { } jobId || _savingFullLog)
+            return;
+
+        var dialog = new SaveFileDialog
+        {
+            FileName = $"line-{jobId:D}.txt",
+            DefaultExt = ".txt",
+            Filter = "Text log (*.txt)|*.txt",
+            OverwritePrompt = true
+        };
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var path = dialog.FileName;
+        if (!string.Equals(Path.GetExtension(path), ".txt", StringComparison.OrdinalIgnoreCase))
+        {
+            FullLogMessage.Text = "เลือกชื่อไฟล์ที่ลงท้ายด้วย .txt";
+            return;
+        }
+
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        _savingFullLog = true;
+        FullLogButton.IsEnabled = false;
+        try
+        {
+            await RunAsync(async () =>
+            {
+                try
+                {
+                    await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                        bufferSize: 8192, useAsync: true))
+                        await _api.WriteFullLineLogAsync(session, jobId, output, _lifetime.Token);
+
+                    if (_session != session)
+                        return;
+                    File.Move(temporary, path, overwrite: true);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    FullLogMessage.Text = "บันทึก Log ไม่สำเร็จ";
+                    return;
+                }
+
+                if (_session == session)
+                {
+                    FullLogMessage.Text = "บันทึก Log แล้ว";
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                    }
+                    catch (Win32Exception)
+                    {
+                        FullLogMessage.Text = $"บันทึก Log ที่ {path}";
+                    }
+                }
+            }, FullLogMessage, session);
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            _savingFullLog = false;
+            FullLogButton.IsEnabled = _session is not null && _selectedJob is not null;
+        }
+    }
+
     private void RenderJob(RegistrationJob? job)
     {
         JobStateLabel.Text = job is null
@@ -400,6 +473,7 @@ public partial class MainWindow : Window
         JobResultLabel.Text = job?.Result?.AccountId is { } account ? $"บัญชี LINE {account}" : string.Empty;
         JobErrorLabel.Text = job?.Error?.Code ?? string.Empty;
         OtpPanel.Visibility = job?.State == "awaitingOtp" ? Visibility.Visible : Visibility.Collapsed;
+        FullLogButton.IsEnabled = !_savingFullLog && _session is not null && _selectedJob is not null;
         OtpDeadlineLabel.Text = job?.OtpExpiresAt is { } time ? $"ส่งก่อน {time.ToLocalTime():HH:mm:ss}" : string.Empty;
     }
 
