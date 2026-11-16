@@ -11,10 +11,6 @@
     <div class="shell">
         <aside class="sidebar">
             <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span> LINE API Console</div>
-            <nav id="menu" aria-label="เมนู" hidden>
-                <a href="/" data-route="registration"><span class="nav-icon" aria-hidden="true">＋</span> ทดสอบสมัครบัญชี</a>
-                <a href="/monitor" data-route="monitor" id="monitor-link" hidden><span class="nav-icon" aria-hidden="true">≋</span> Monitor</a>
-            </nav>
             <div class="identity" id="identity" hidden>
                 <div class="identity-text"><strong id="username"></strong><span id="role"></span></div>
                 <button type="button" id="logout" class="logout">ออกจากระบบ</button>
@@ -24,7 +20,7 @@
             <section id="login-page" class="login-page" aria-labelledby="login-heading">
                 <div class="panel login-panel">
                     <h1 id="login-heading">เข้าสู่ระบบ</h1>
-                    <p class="description">ใช้บัญชีผู้ใช้ของ LINE API Console</p>
+                    <p class="description">ใช้บัญชีแอดมินของ LINE API Console</p>
                     <form id="login-form" method="post" action="/v1/auth/login" class="form">
                         <label>ชื่อผู้ใช้<input name="username" autocomplete="username" maxlength="64" required></label>
                         <label>รหัสผ่าน<input name="password" type="password" autocomplete="current-password" maxlength="128" required></label>
@@ -32,62 +28,6 @@
                         <button class="primary" type="submit">เข้าสู่ระบบ</button>
                     </form>
                 </div>
-            </section>
-
-            <section id="registration-page" aria-labelledby="registration-heading" hidden>
-                <header class="page-header">
-                    <h1 id="registration-heading" tabindex="-1">ทดสอบสมัครบัญชี</h1>
-                    <p class="description">ส่งงานสมัคร LINE และติดตามตั้งแต่เข้าคิวจนถึงยืนยัน OTP</p>
-                </header>
-                <div class="workspace">
-                    <section class="panel" aria-labelledby="new-job">
-                        <h2 id="new-job">ข้อมูลสำหรับสมัคร</h2>
-                        <form id="registration-form" method="post" action="/v1/jobs/registration" class="form">
-                            <div class="form-row phone-row">
-                                <label>หมายเลขโทรศัพท์<input name="phoneNumber" type="tel" placeholder="+66812345678" pattern="\+[1-9][0-9]{7,14}" autocomplete="off" required></label>
-                                <label>ประเทศ<input name="countryCode" value="TH" pattern="[A-Za-z]{2}" maxlength="2" required></label>
-                            </div>
-                            <label>ชื่อที่แสดง<input name="displayName" maxlength="128" required></label>
-                            <label>รหัสผ่านบัญชี LINE<input name="password" type="password" autocomplete="new-password" maxlength="128" required></label>
-                            <div class="form-row">
-                                <label>Device ID<input name="deviceId" maxlength="128" required></label>
-                                <label>รุ่นอุปกรณ์<input name="deviceModel" maxlength="128" required></label>
-                            </div>
-                            <p class="hint">งานนี้ส่งคำขอจริงไปยัง LINE และอาจส่ง SMS ไปยังเบอร์ที่ระบุ</p>
-                            <p id="registration-message" class="message" role="status" hidden></p>
-                            <button class="primary" type="submit">ส่งงานสมัครบัญชี</button>
-                        </form>
-                    </section>
-                    <section class="panel detail-panel" aria-labelledby="job-heading">
-                        <h2 id="job-heading">สถานะงาน</h2>
-                        <p id="job-empty" class="empty">ส่งงานสมัครหรือเลือกงานจากรายการด้านล่าง</p>
-                        <div id="job-detail" hidden>
-                            <dl class="details">
-                                <div><dt>สถานะ</dt><dd id="job-state"></dd></div>
-                                <div><dt>ขั้นตอนล่าสุด</dt><dd id="job-stage"></dd></div>
-                                <div><dt>Job ID</dt><dd id="job-id" class="mono"></dd></div>
-                                <div id="job-expiry-row" hidden><dt>กำหนดส่ง OTP</dt><dd id="job-expiry"></dd></div>
-                                <div id="job-account-row" hidden><dt>บัญชี LINE</dt><dd id="job-account" class="mono"></dd></div>
-                                <div id="job-error-row" hidden><dt>ข้อผิดพลาด</dt><dd id="job-error" class="mono"></dd></div>
-                            </dl>
-                            <form id="otp-form" method="post" class="form otp-form" hidden>
-                                <label>รหัส OTP<input name="code" type="text" inputmode="numeric" pattern="[0-9]{4,12}" maxlength="12" autocomplete="one-time-code" required></label>
-                                <button class="primary" type="submit">ยืนยัน OTP</button>
-                            </form>
-                            <p id="otp-message" class="message" role="status" hidden></p>
-                        </div>
-                    </section>
-                </div>
-                <section class="panel history-panel" aria-labelledby="history-heading">
-                    <div class="panel-heading"><h2 id="history-heading">งานสมัครของฉัน</h2><span id="registration-sync" class="hint" role="status"></span></div>
-                    <div id="history-table" class="table-wrap">
-                        <table>
-                            <thead><tr><th scope="col">Job ID</th><th scope="col">สถานะ</th><th scope="col">ขั้นตอนล่าสุด</th><th scope="col">อัปเดต</th></tr></thead>
-                            <tbody id="history-rows"></tbody>
-                        </table>
-                    </div>
-                    <p id="history-empty" class="empty">ยังไม่มีงานสมัครบัญชี</p>
-                </section>
             </section>
 
             <section id="monitor-page" aria-labelledby="monitor-heading" hidden>
@@ -103,7 +43,7 @@
                             <button type="button" data-filter="all" aria-pressed="true">งานล่าสุด</button>
                         </div>
                     </div>
-                    <div class="table-wrap">
+                    <div class="table-wrap" tabindex="0" role="region" aria-label="ตารางงานจากผู้ใช้">
                         <table>
                             <thead><tr><th scope="col">ผู้ใช้</th><th scope="col">ประเภทงาน</th><th scope="col">สถานะ</th><th scope="col">ขั้นตอนล่าสุด</th><th scope="col">ส่งเมื่อ</th><th scope="col">อัปเดต</th><th scope="col">Job ID</th></tr></thead>
                             <tbody id="monitor-rows"></tbody>

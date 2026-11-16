@@ -1,3 +1,4 @@
+using LINEAPI;
 using LineJobs.Configuration;
 using LineJobs.Jobs;
 using LineJobs.Security;
@@ -64,6 +65,22 @@ internal sealed class JobStore(Database database, ApiSettings settings, SecretSt
 
     internal async Task<JobStatus?> GetAsync(string owner, Guid id, CancellationToken ct) =>
         (await database.Jobs.Find(Owned(owner, id)).FirstOrDefaultAsync(ct))?.Status();
+
+    internal async Task<LineRpcTrace[]?> GetLineLogAsync(string owner, Guid id, CancellationToken ct)
+    {
+        var events = await database.LineLogs.Find(x => x.Id == id.ToString() && x.Owner == owner)
+            .Project(x => x.Events).FirstOrDefaultAsync(ct);
+        if (events is not null)
+            return events;
+
+        return await database.Jobs.Find(Owned(owner, id)).Project(x => x.Id).AnyAsync(ct) ? [] : null;
+    }
+
+    internal Task AppendLineLogAsync(ClaimedJob job, LineRpcTrace entry, CancellationToken ct) =>
+        database.LineLogs.UpdateOneAsync(x => x.Id == job.Id.ToString() && x.Owner == job.Owner,
+            Builders<LineLogDocument>.Update.SetOnInsert(x => x.Owner, job.Owner)
+                .PushEach(x => x.Events, [entry], slice: -48),
+            new UpdateOptions { IsUpsert = true }, ct);
 
     internal async Task<IReadOnlyList<JobStatus>> ListAsync(string owner, int limit, CancellationToken ct)
     {

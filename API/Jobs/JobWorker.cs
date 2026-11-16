@@ -136,7 +136,7 @@ internal sealed class JobWorker(
     {
         var work = jobs.Read<RegistrationWork>(job);
         var profile = work.Profile ?? (work.SessionId is null ? AndroidRandomizer.Sample(settings.LineVersion) : settings.FallbackProfile);
-        var context = settings.LineContext(profile);
+        var context = settings.LineContext(profile, trace: (entry, token) => LogLineAsync(job, entry, token));
         if (work.SessionId is null)
         {
             work = work with { Profile = profile };
@@ -145,17 +145,23 @@ internal sealed class JobWorker(
             await jobs.SetStageAsync(job, "checkRegistrationMethod", ct);
             await line.Registration.GetCountryInfoAsync(context, session, cancellationToken: ct);
             var allowed = await line.Registration.GetAllowedMethodAsync(context, session, work.CountryCode, ct);
+            await LogLineAsync(job, new LineRpcTrace(DateTime.UtcNow, "getAllowedRegistrationMethod", "detail",
+                Outcome: allowed.ToString()), ct);
             if (allowed != RegistrationMethod.Phone)
                 throw new JobRejectedException("phoneRegistrationUnavailable");
 
             var verification = await line.Registration.GetPhoneVerificationAsync(context, session,
                 new RegistrationDevice(work.DeviceId, work.DeviceModel), work.PhoneNumber, work.CountryCode, ct);
+            await LogLineAsync(job, new LineRpcTrace(DateTime.UtcNow, "getPhoneVerifMethodForRegistration", "detail",
+                Outcome: $"available={MethodNames(verification.AvailableMethods)}"), ct);
             if (!verification.AvailableMethods.Contains(PhoneVerificationMethod.Sms))
                 throw new JobRejectedException("smsUnavailable");
 
             await jobs.SetStageAsync(job, "requestOtp", ct);
-            await line.Registration.RequestCodeAsync(
+            var methods = await line.Registration.RequestCodeAsync(
                 context, session, verification.FormattedNumber, work.CountryCode, PhoneVerificationMethod.Sms, ct);
+            await LogLineAsync(job, new LineRpcTrace(DateTime.UtcNow, "requestToSendPhonePinCode", "detail",
+                Outcome: $"requested=Sms; returned={MethodNames(methods)}"), ct);
             await jobs.AwaitOtpAsync(job, work with { SessionId = session, PhoneNumber = verification.FormattedNumber }, ct);
             return;
         }
@@ -181,6 +187,29 @@ internal sealed class JobWorker(
 
         var account = new AccountWrite(accountId, job.Owner, new AccountSecret(registered.AccessToken, registered.RefreshToken, profile));
         await jobs.CompleteAsync(job, new JobResult(AccountId: accountId), account, ct);
+    }
+
+    private static string MethodNames(IReadOnlyList<PhoneVerificationMethod> methods) =>
+        methods.Count == 0 ? "none" : string.Join(", ", methods.Distinct().Take(8));
+
+    private async Task LogLineAsync(ClaimedJob job, LineRpcTrace entry, CancellationToken ct)
+    {
+        logger.LogInformation(
+            "Job {JobId} LINE {Phase} {Operation} {Host}{Path} HTTP {Status} RPC {RpcCode} {Outcome} ({ElapsedMs} ms)",
+            job.Id, entry.Phase, entry.Operation, entry.Host, entry.Path, entry.HttpStatus,
+            entry.RpcCode, entry.Outcome, entry.ElapsedMilliseconds);
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromMilliseconds(700));
+        try
+        {
+            await jobs.AppendLineLogAsync(job, entry, deadline.Token);
+        }
+        catch (Exception ex) when (ex is MongoException or TimeoutException or OperationCanceledException)
+        {
+            if (!ct.IsCancellationRequested)
+                logger.LogWarning("Unable to store LINE log for job {JobId} ({ExceptionType}).", job.Id, ex.GetType().Name);
+        }
     }
 
     private async Task ExpireJobsAsync(CancellationToken ct)

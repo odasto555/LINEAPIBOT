@@ -25,6 +25,7 @@ internal sealed class Database : IDisposable
         _client = new MongoClient(clientSettings);
         _db = _client.GetDatabase(settings.MongoDatabaseName).WithWriteConcern(WriteConcern.WMajority);
         Jobs = _db.GetCollection<JobDocument>("jobs");
+        LineLogs = _db.GetCollection<LineLogDocument>("job_line_logs");
         Accounts = _db.GetCollection<AccountDocument>("accounts");
         Users = _db.GetCollection<UserDocument>("users");
         Sessions = _db.GetCollection<SessionDocument>("sessions");
@@ -32,6 +33,7 @@ internal sealed class Database : IDisposable
     }
 
     internal IMongoCollection<JobDocument> Jobs { get; }
+    internal IMongoCollection<LineLogDocument> LineLogs { get; }
     internal IMongoCollection<AccountDocument> Accounts { get; }
     internal IMongoCollection<UserDocument> Users { get; }
     internal IMongoCollection<SessionDocument> Sessions { get; }

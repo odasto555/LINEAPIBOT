@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using LINEAPI.Protocol;
@@ -26,6 +27,15 @@ internal sealed class LineRpcClient(HttpClient httpClient, Uri baseUri)
         if (context.AccessToken is { } token)
             request.Headers.TryAddWithoutValidation("X-Line-Access", token);
 
+        var trace = context.Trace;
+        var uri = request.RequestUri!;
+        if (trace is not null)
+            await trace(new LineRpcTrace(DateTime.UtcNow, operation, "send", uri.Host, uri.AbsolutePath), cancellationToken);
+
+        var started = Stopwatch.GetTimestamp();
+        int? status = null;
+        LineApiException? failure = null;
+        var decoded = false;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (httpClient.Timeout != Timeout.InfiniteTimeSpan)
             deadline.CancelAfter(httpClient.Timeout);
@@ -33,27 +43,37 @@ internal sealed class LineRpcClient(HttpClient httpClient, Uri baseUri)
         try
         {
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
                 throw new LineApiException(operation, LineFailure.Http, response.StatusCode);
 
             var bytes = await ReadResponseAsync(response.Content, deadline.Token);
-            return await CompactRpc.DecodeAsync(operation, bytes, sequenceId, voidResult, deadline.Token);
+            var result = await CompactRpc.DecodeAsync(operation, bytes, sequenceId, voidResult, deadline.Token);
+            decoded = true;
+            return result;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (LineApiException ex)
         {
-            throw new LineApiException(operation, LineFailure.Network);
-        }
-        catch (HttpRequestException)
-        {
-            throw new LineApiException(operation, LineFailure.Network);
+            failure = ex;
+            throw;
         }
         catch (Exception ex) when (ex is TException or InvalidDataException or OverflowException)
         {
-            throw new LineApiException(operation, LineFailure.Protocol);
+            throw failure = new LineApiException(operation, LineFailure.Protocol);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is HttpRequestException or IOException ||
+            ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
-            throw new LineApiException(operation, LineFailure.Network);
+            throw failure = new LineApiException(operation, LineFailure.Network);
+        }
+        finally
+        {
+            if (trace is not null && !cancellationToken.IsCancellationRequested)
+            {
+                var outcome = failure?.Failure.ToString() ?? (decoded ? "ok" : "unexpected");
+                await trace(new LineRpcTrace(DateTime.UtcNow, operation, "receive", uri.Host, uri.AbsolutePath, status,
+                    (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, failure?.RpcCode, outcome), cancellationToken);
+            }
         }
     }
 

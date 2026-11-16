@@ -56,8 +56,9 @@ internal sealed class ApiSettings
         };
     }
 
-    internal LineRequestContext LineContext(LineClientProfile profile, string? accessToken = null) =>
-        new(profile.UserAgent, profile.Application, LineLocale, accessToken);
+    internal LineRequestContext LineContext(LineClientProfile profile, string? accessToken = null,
+        Func<LineRpcTrace, CancellationToken, Task>? trace = null) =>
+        new(profile.UserAgent, profile.Application, LineLocale, accessToken, trace);
 
     internal LineRequestContext ForAccount(string accessToken, LineClientProfile? profile = null) =>
         LineContext(AndroidRandomizer.WithLineVersion(profile ?? FallbackProfile, LineVersion), accessToken);

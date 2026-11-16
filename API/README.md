@@ -37,9 +37,12 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 
 ## หน้าทดสอบและ Monitor
 
-- เปิด `/` เพื่อล็อกอิน ส่งงานสมัครบัญชี ส่ง OTP และดูสถานะงานสมัครของตัวเอง การส่งงานเรียก LINE จริงตามการตั้งค่าของบริการ
+- เปิดโปรแกรม Windows `RegistrationTester` เพื่อล็อกอิน ส่งงานสมัครบัญชี ส่ง OTP และดูสถานะงานสมัครของตัวเอง โปรแกรมจะสร้างรหัสผ่าน LINE, Device ID และรุ่นอุปกรณ์ให้ในแต่ละงาน การส่งงานเรียก LINE จริงตามการตั้งค่าของบริการ
 - เปิด `/monitor` ด้วยบัญชีแอดมินเพื่อดูเจ้าของงาน ประเภท สถานะ ขั้นตอนล่าสุด เวลา และรหัสข้อผิดพลาดของงานจากทุกผู้ใช้ เลือกงานล่าสุดหรือเฉพาะงานที่กำลังดำเนินการได้
-- หน้าเว็บทั้งสองอยู่ที่ Web Service เดียวกับ API และรีเฟรชสถานะทุก 4 วินาทีขณะเปิดแท็บอยู่
+- หน้า Monitor อยู่ที่ Web Service เดียวกับ API และรีเฟรชสถานะทุก 4 วินาทีขณะเปิดแท็บอยู่
+- โปรแกรม Windows แสดง Log การติดต่อ LINE แยกตามงาน งานสมัครใหม่จะเห็นชื่อ RPC ขาไป ขากลับ สถานะ HTTP/RPC และวิธี OTP ที่ LINE ตอบกลับ โดยไม่มีข้อมูลลับใน payload
+
+รันโปรแกรมทดสอบบน Windows จากรากรีโปด้วย `dotnet run --project RegistrationTester` ค่าเริ่มต้นใช้ `https://lineapibot.onrender.com/` หากใช้ API ทดสอบในเครื่อง ให้ส่ง URL ต่อท้าย เช่น `dotnet run --project RegistrationTester -- http://127.0.0.1:5080/`
 
 ## เรียก API
 
@@ -61,6 +64,7 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 | POST | `/v1/jobs/add-friends` | `accountId`, `phoneNumbers`, `revision`, `sequenceId` (ไม่บังคับ) |
 | POST | `/v1/jobs/create-group` | `accountId`, `name`, `userIds`, `revision` |
 | GET | `/v1/jobs/{jobId}` | สถานะ ขั้นตอน กำหนดส่ง OTP และผลลัพธ์ของงาน |
+| GET | `/v1/jobs/{jobId}/line-log` | Log การติดต่อ LINE ล่าสุดของงานสมัคร ดูได้ด้วยบัญชีเจ้าของงาน |
 | GET | `/v1/jobs?limit=25` | งานล่าสุดของผู้ใช้ |
 | POST | `/v1/jobs/{jobId}/otp` | `{"code":"012345"}` ใช้ string เพื่อรักษาเลขศูนย์ด้านหน้า |
 | POST | `/v1/accounts` | `{"accessToken":"…"}` ผูกบัญชีเดิม โดยอ่าน Account ID จาก LINE |

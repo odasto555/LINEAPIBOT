@@ -1,0 +1,159 @@
+<Window x:Class="RegistrationTester.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="LINE Registration Tester" Width="1020" Height="745" MinWidth="730" MinHeight="500"
+    WindowStartupLocation="CenterScreen" Background="#F3F6FB" Foreground="#142034" FontFamily="Segoe UI">
+    <Window.Resources>
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="Margin" Value="0,4,0,12"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="BorderBrush" Value="#CBD7E7"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="PasswordBox">
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="Margin" Value="0,4,0,12"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="BorderBrush" Value="#CBD7E7"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderBrush" Value="#CBD7E7"/>
+            <Setter Property="Background" Value="#FFFFFF"/>
+            <Setter Property="Foreground" Value="#24436C"/>
+        </Style>
+        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#2453BB"/>
+            <Setter Property="BorderBrush" Value="#2453BB"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style x:Key="Panel" TargetType="Border">
+            <Setter Property="Background" Value="White"/>
+            <Setter Property="Padding" Value="22"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#DCE4EF"/>
+        </Style>
+        <Style x:Key="Heading" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="18"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#53637B"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+    </Window.Resources>
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Background="#101D35" Padding="23,17">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="White" Text="LINE Registration Tester"/>
+                    <TextBlock x:Name="ServerLabel" Foreground="#C0CDE5" Margin="0,5,0,0" FontSize="12"/>
+                </StackPanel>
+                <StackPanel x:Name="SessionActions" Orientation="Horizontal" Grid.Column="1" VerticalAlignment="Center" Visibility="Collapsed">
+                    <TextBlock x:Name="SignedInUser" Foreground="White" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <Button x:Name="MonitorButton" Content="Monitor" Click="OpenMonitor" Margin="0,0,9,0"/>
+                    <Button x:Name="LogoutButton" Content="ออกจากระบบ" Click="Logout"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid>
+            <Border x:Name="LoginPanel" Style="{StaticResource Panel}" Width="365" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Style="{StaticResource Heading}" Text="เข้าสู่ระบบ"/>
+                    <Label Content="ชื่อผู้ใช้" Target="{Binding ElementName=UsernameInput}" Padding="0"/>
+                    <TextBox x:Name="UsernameInput" MaxLength="64"/>
+                    <Label Content="รหัสผ่าน" Target="{Binding ElementName=LoginPasswordInput}" Padding="0"/>
+                    <PasswordBox x:Name="LoginPasswordInput" MaxLength="128"/>
+                    <Button x:Name="LoginButton" Content="เข้าสู่ระบบ" Style="{StaticResource PrimaryButton}" IsDefault="True" Click="Login"/>
+                    <TextBlock x:Name="LoginMessage" Style="{StaticResource Hint}" Margin="0,10,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <ScrollViewer x:Name="Workspace" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <Grid Margin="22">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.18*"/>
+                        <ColumnDefinition Width="17"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Style="{StaticResource Panel}" VerticalAlignment="Top">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource Heading}" Text="ทดสอบสมัครบัญชี LINE"/>
+                            <StackPanel x:Name="RegistrationFields">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="14"/>
+                                        <ColumnDefinition Width="75"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <Label Content="หมายเลขโทรศัพท์" Target="{Binding ElementName=PhoneInput}" Padding="0"/>
+                                        <TextBox x:Name="PhoneInput" MaxLength="16" TextChanged="RegistrationEdited" ToolTip="รูปแบบ +66812345678"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <Label Content="ประเทศ" Target="{Binding ElementName=CountryInput}" Padding="0"/>
+                                        <TextBox x:Name="CountryInput" Text="TH" MaxLength="2" TextChanged="RegistrationEdited"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Label Content="ชื่อที่แสดง" Target="{Binding ElementName=DisplayNameInput}" Padding="0"/>
+                                <TextBox x:Name="DisplayNameInput" MaxLength="128" TextChanged="RegistrationEdited"/>
+                                <Label Content="รหัสผ่านบัญชี LINE" Target="{Binding ElementName=LinePasswordInput}" Padding="0"/>
+                                <PasswordBox x:Name="LinePasswordInput" MaxLength="128" PasswordChanged="RegistrationEdited"/>
+                            </StackPanel>
+                            <Label Content="Device ID" Target="{Binding ElementName=DeviceIdInput}" Padding="0"/>
+                            <TextBox x:Name="DeviceIdInput" IsReadOnly="True" FontFamily="Consolas"/>
+                            <Label Content="รุ่นอุปกรณ์" Target="{Binding ElementName=DeviceModelInput}" Padding="0"/>
+                            <TextBox x:Name="DeviceModelInput" IsReadOnly="True"/>
+                            <WrapPanel Margin="0,0,0,12">
+                                <Button x:Name="GenerateButton" Content="สุ่มค่าใหม่" Click="GenerateNew" Margin="0,0,8,0"/>
+                                <Button x:Name="CopyPasswordButton" Content="คัดลอกรหัสผ่าน LINE" Click="CopyPassword"/>
+                            </WrapPanel>
+                            <TextBlock Style="{StaticResource Hint}" Text="ใช้เบอร์ที่รับ SMS ได้ เช่น +66812345678 คำขอนี้ส่งไปยัง LINE จริง" Margin="0,0,0,12"/>
+                            <Button x:Name="SubmitButton" Style="{StaticResource PrimaryButton}" Content="ส่งงานสมัครบัญชี" Click="SubmitRegistration" HorizontalAlignment="Left"/>
+                            <TextBlock x:Name="RegistrationMessage" Style="{StaticResource Hint}" Margin="0,10,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="2" Style="{StaticResource Panel}" VerticalAlignment="Top">
+                        <StackPanel>
+                            <TextBlock Style="{StaticResource Heading}" Text="สถานะงาน"/>
+                            <Label Content="งานสมัครล่าสุด" Target="{Binding ElementName=JobPicker}" Padding="0"/>
+                            <ComboBox x:Name="JobPicker" Margin="0,4,0,12" Padding="6" DisplayMemberPath="Label" SelectionChanged="SelectJob"/>
+                            <TextBlock x:Name="JobStateLabel" FontWeight="SemiBold" FontSize="16" Text="ยังไม่ได้เลือกงาน"/>
+                            <TextBlock x:Name="JobStageLabel" Style="{StaticResource Hint}" Margin="0,4,0,0"/>
+                            <TextBlock x:Name="JobIdLabel" Style="{StaticResource Hint}" FontFamily="Consolas" Margin="0,6,0,0"/>
+                            <TextBlock x:Name="JobResultLabel" Style="{StaticResource Hint}" Margin="0,6,0,0"/>
+                            <TextBlock x:Name="JobErrorLabel" Style="{StaticResource Hint}" Margin="0,6,0,0"/>
+                            <StackPanel x:Name="OtpPanel" Visibility="Collapsed" Margin="0,14,0,0">
+                                <TextBlock x:Name="OtpDeadlineLabel" Style="{StaticResource Hint}" Margin="0,0,0,6"/>
+                                <Label Content="รหัส OTP" Target="{Binding ElementName=OtpInput}" Padding="0"/>
+                                <TextBox x:Name="OtpInput" MaxLength="12" InputScope="Number"/>
+                                <Button x:Name="SendOtpButton" Content="ยืนยัน OTP" Style="{StaticResource PrimaryButton}" Click="SubmitOtp" HorizontalAlignment="Left"/>
+                            </StackPanel>
+                            <TextBlock x:Name="OtpMessage" Style="{StaticResource Hint}" Margin="0,8,0,0"/>
+                            <TextBlock x:Name="SyncMessage" Style="{StaticResource Hint}" Margin="0,10,0,0"/>
+                            <TextBlock Text="Log การติดต่อ LINE" Style="{StaticResource Heading}" Margin="0,16,0,0"/>
+                            <TextBox x:Name="LineLogOutput" Height="170" FontFamily="Consolas" FontSize="12"
+                                TextWrapping="Wrap" VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto"
+                                Text="เลือกงานเพื่อดู log" Margin="0,5,0,0" IsReadOnly="True"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </ScrollViewer>
+        </Grid>
+    </DockPanel>
+</Window>
+

@@ -15,6 +15,7 @@ internal static class JobEndpoints
         routes.MapPost("/create-group", CreateGroup);
         routes.MapPost("/{id:guid}/otp", SubmitOtp);
         routes.MapGet("/{id:guid}", Get);
+        routes.MapGet("/{id:guid}/line-log", LineLog);
         routes.MapGet("", List);
     }
 
@@ -95,6 +96,10 @@ internal static class JobEndpoints
 
     private static async Task<IResult> Get(Guid id, JobStore jobs, HttpContext context, CancellationToken ct) =>
         await jobs.GetAsync(Owner(context), id, ct) is { } job ? Results.Ok(job) : Results.NotFound(new ApiError("jobNotFound"));
+
+    private static async Task<IResult> LineLog(Guid id, JobStore jobs, HttpContext context, CancellationToken ct) =>
+        await jobs.GetLineLogAsync(Owner(context), id, ct) is { } events
+            ? Results.Ok(events) : Results.NotFound(new ApiError("jobNotFound"));
 
     private static async Task<IResult> List(int? limit, JobStore jobs, HttpContext context, CancellationToken ct)
     {
