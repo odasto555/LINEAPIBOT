@@ -30,10 +30,15 @@ internal sealed class LineRpcClient(HttpClient httpClient, Uri baseUri)
         var trace = context.Trace;
         var uri = request.RequestUri!;
         if (trace is not null)
-            await trace(new LineRpcTrace(DateTime.UtcNow, operation, "send", uri.Host, uri.AbsolutePath), cancellationToken);
+        {
+            var hex = await CompactHexPreview.TryFormatAsync(operation, sequenceId, body, request: true, cancellationToken);
+            await trace(new LineRpcTrace(DateTime.UtcNow, operation, "send", uri.Host, uri.AbsolutePath,
+                PayloadHex: hex, PayloadBytes: body.Length), cancellationToken);
+        }
 
         var started = Stopwatch.GetTimestamp();
         int? status = null;
+        byte[]? bytes = null;
         LineApiException? failure = null;
         var decoded = false;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -47,7 +52,7 @@ internal sealed class LineRpcClient(HttpClient httpClient, Uri baseUri)
             if (!response.IsSuccessStatusCode)
                 throw new LineApiException(operation, LineFailure.Http, response.StatusCode);
 
-            var bytes = await ReadResponseAsync(response.Content, deadline.Token);
+            bytes = await ReadResponseAsync(response.Content, deadline.Token);
             var result = await CompactRpc.DecodeAsync(operation, bytes, sequenceId, voidResult, deadline.Token);
             decoded = true;
             return result;
@@ -70,9 +75,12 @@ internal sealed class LineRpcClient(HttpClient httpClient, Uri baseUri)
         {
             if (trace is not null && !cancellationToken.IsCancellationRequested)
             {
+                var elapsed = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                var hex = bytes is null ? null : await CompactHexPreview.TryFormatAsync(
+                    operation, sequenceId, bytes, request: false, cancellationToken);
                 var outcome = failure?.Failure.ToString() ?? (decoded ? "ok" : "unexpected");
                 await trace(new LineRpcTrace(DateTime.UtcNow, operation, "receive", uri.Host, uri.AbsolutePath, status,
-                    (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, failure?.RpcCode, outcome), cancellationToken);
+                    elapsed, failure?.RpcCode, outcome, hex, bytes?.Length), cancellationToken);
             }
         }
     }

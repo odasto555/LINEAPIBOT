@@ -3,7 +3,7 @@ using Thrift.Protocol.Entities;
 
 namespace LINEAPI.Protocol;
 
-internal sealed class CompactReader(TProtocol protocol, CancellationToken ct)
+internal sealed class CompactReader(TProtocol protocol, CancellationToken ct, CompactHexPreview? preview = null)
 {
     private int _remaining = 65_536;
 
@@ -36,12 +36,22 @@ internal sealed class CompactReader(TProtocol protocol, CancellationToken ct)
             TType.I32 => await protocol.ReadI32Async(ct),
             TType.I64 => await protocol.ReadI64Async(ct),
             TType.Double => await protocol.ReadDoubleAsync(ct),
-            TType.String => await protocol.ReadStringAsync(ct),
+            TType.String => await ReadStringAsync(),
             TType.Struct => await ReadStructAsync(depth),
             TType.List or TType.Set => await ReadCollectionAsync(type, depth),
             TType.Map => await ReadMapAsync(depth),
             _ => throw new InvalidDataException()
         };
+    }
+
+    private async Task<string> ReadStringAsync()
+    {
+        if (preview is null)
+            return await protocol.ReadStringAsync(ct);
+
+        var bytes = await protocol.ReadBinaryAsync(ct);
+        preview.MaskBinary(bytes.Length);
+        return string.Empty;
     }
 
     private async Task<WireCollection> ReadCollectionAsync(TType type, int depth)

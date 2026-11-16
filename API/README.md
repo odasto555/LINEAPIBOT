@@ -41,6 +41,7 @@ dotnet run --project API/API.csproj --urls http://127.0.0.1:5080
 - เปิด `/monitor` ด้วยบัญชีแอดมินเพื่อดูเจ้าของงาน ประเภท สถานะ ขั้นตอนล่าสุด เวลา และรหัสข้อผิดพลาดของงานจากทุกผู้ใช้ เลือกงานล่าสุดหรือเฉพาะงานที่กำลังดำเนินการได้
 - หน้า Monitor อยู่ที่ Web Service เดียวกับ API และรีเฟรชสถานะทุก 4 วินาทีขณะเปิดแท็บอยู่
 - โปรแกรม Windows แสดง Log การติดต่อ LINE แยกตามงาน งานสมัครใหม่จะเห็นชื่อ RPC ขาไป ขากลับ สถานะ HTTP/RPC และวิธี OTP ที่ LINE ตอบกลับ โดยไม่มีข้อมูลลับใน payload
+- `HEX REQ` และ `HEX RES` แสดง 512 ไบต์แรกของข้อความ Thrift Compact ที่อ่านโครงสร้างได้ โดยใช้ `**` แทนค่าข้อความและไบนารี
 
 รันโปรแกรมทดสอบบน Windows จากรากรีโปด้วย `dotnet run --project RegistrationTester` ค่าเริ่มต้นใช้ `https://lineapibot.onrender.com/` หากใช้ API ทดสอบในเครื่อง ให้ส่ง URL ต่อท้าย เช่น `dotnet run --project RegistrationTester -- http://127.0.0.1:5080/`
 

@@ -13,7 +13,7 @@ internal sealed record AcceptedJob(Guid JobId);
 internal sealed record JobResult(string? AccountId);
 internal sealed record JobError(string Code);
 internal sealed record LineLogEntry(DateTimeOffset Timestamp, string Operation, string Phase, string? Host, string? Path,
-    int? HttpStatus, long? ElapsedMilliseconds, int? RpcCode, string? Outcome);
+    int? HttpStatus, long? ElapsedMilliseconds, int? RpcCode, string? Outcome, string? PayloadHex, int? PayloadBytes);
 internal sealed record RegistrationJob(Guid Id, string Kind, string State, string Stage, DateTimeOffset UpdatedAt,
     DateTimeOffset? OtpExpiresAt, JobResult? Result, JobError? Error)
 {

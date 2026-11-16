@@ -370,8 +370,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string FormatLineLog(LineLogEntry entry) =>
-        string.Join("  ", new[]
+    private static string FormatLineLog(LineLogEntry entry)
+    {
+        var summary = string.Join("  ", new[]
         {
             entry.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff"),
             entry.Phase switch { "send" => "SEND", "receive" => "RECV", _ => "INFO" },
@@ -382,6 +383,12 @@ public partial class MainWindow : Window
             entry.Outcome,
             entry.ElapsedMilliseconds is { } elapsed ? $"{elapsed} ms" : null
         }.Where(value => !string.IsNullOrEmpty(value)));
+        if (entry.PayloadHex is null)
+            return summary;
+
+        var direction = entry.Phase == "send" ? "REQ" : "RES";
+        return $"{summary}{Environment.NewLine}    HEX {direction} ({entry.PayloadBytes} B)  {entry.PayloadHex}";
+    }
 
     private void RenderJob(RegistrationJob? job)
     {
