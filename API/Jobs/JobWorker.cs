@@ -160,8 +160,12 @@ internal sealed class JobWorker(
                 throw new JobRejectedException("smsUnavailable");
 
             await jobs.SetStageAsync(job, "requestOtp", ct);
+            var smsNumber = work.CountryCode == "TH" && work.PhoneNumber.Length == 12 &&
+                work.PhoneNumber.StartsWith("+66", StringComparison.Ordinal)
+                ? "0" + work.PhoneNumber[3..]
+                : verification.FormattedNumber;
             var methods = await line.Registration.RequestCodeAsync(
-                context, session, verification.FormattedNumber, work.CountryCode, PhoneVerificationMethod.Sms, ct);
+                context, session, smsNumber, work.CountryCode, PhoneVerificationMethod.Sms, ct);
             await LogLineAsync(job, new LineRpcTrace(DateTime.UtcNow, "requestToSendPhonePinCode", "detail",
                 Outcome: $"requested=Sms; returned={MethodNames(methods)}"), ct);
             await jobs.AwaitOtpAsync(job, work with { SessionId = session, PhoneNumber = verification.FormattedNumber }, ct);
